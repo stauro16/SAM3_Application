@@ -1599,6 +1599,7 @@ if num_final_kept > 0:
             ax.imshow(overlay)
 
 # Second: red pole mask overlay
+# Second: red pole mask overlay + POLE label
 if projected_pole_mask_available:
     pole_overlay = np.zeros(
         (projected_pole_mask.shape[0], projected_pole_mask.shape[1], 4),
@@ -1609,6 +1610,22 @@ if projected_pole_mask_available:
     pole_overlay[..., 2] = 0.0
     pole_overlay[..., 3] = projected_pole_mask.astype(np.float32) * POLE_MASK_ALPHA
     ax.imshow(pole_overlay)
+
+    # Add POLE label using the projected pole mask bounds
+    pole_ys, pole_xs = np.where(projected_pole_mask)
+
+    if len(pole_xs) > 0 and len(pole_ys) > 0:
+        pole_label_x = float(pole_xs.min())
+        pole_label_y = float(max(8, pole_ys.min() - 6))
+
+        ax.text(
+            pole_label_x,
+            pole_label_y,
+            "POLE",
+            color="white",
+            fontsize=8,
+            bbox=dict(facecolor="red", alpha=0.90, pad=0.5, edgecolor="none"),
+        )
 
 # Third: yellow boxes + blue labels
 if num_final_kept > 0:
