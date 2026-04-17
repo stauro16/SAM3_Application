@@ -217,10 +217,6 @@ print("CACHE_DIR  :", CACHE_DIR)
 # -----------------------------------------------------------------------------
 # 1. Standard library imports
 # -----------------------------------------------------------------------------
-# EXPLANATION:
-# These support file handling, configuration, paths, timing, typing, and
-# general notebook utilities used across later cells.
-# -----------------------------------------------------------------------------
 import os
 import gc
 import re
@@ -239,17 +235,10 @@ from typing import List, Dict, Any, Optional, Tuple
 # -----------------------------------------------------------------------------
 # 2. Data handling imports
 # -----------------------------------------------------------------------------
-# EXPLANATION:
-# Pandas is used later for image manifests, tracking tables, and pipeline state.
-# -----------------------------------------------------------------------------
 import pandas as pd
 
 # -----------------------------------------------------------------------------
 # 3. Data science and visualisation imports
-# -----------------------------------------------------------------------------
-# EXPLANATION:
-# These libraries support image loading, image processing, plotting, and
-# numerical operations used throughout the notebook.
 # -----------------------------------------------------------------------------
 import cv2
 import numpy as np
@@ -261,29 +250,20 @@ from PIL import Image, ImageOps
 # -----------------------------------------------------------------------------
 # 4. Machine learning imports
 # -----------------------------------------------------------------------------
-# EXPLANATION:
-# These are the core libraries used for GPU execution, tensor handling, and
-# later SAM3 model inference.
-# -----------------------------------------------------------------------------
 import torch
 import torchvision
 
 # -----------------------------------------------------------------------------
 # 5. Global warning behaviour
 # -----------------------------------------------------------------------------
-# EXPLANATION:
-# Suppresses noisy warnings to keep notebook output cleaner during development.
-# -----------------------------------------------------------------------------
+# Optional: keep only if you intentionally want a quieter notebook.
 warnings.filterwarnings("ignore")
 
 # -----------------------------------------------------------------------------
 # 6. Print runtime version information
 # -----------------------------------------------------------------------------
-# EXPLANATION:
-# This confirms that the expected package versions are active after the restart
-# and that the environment is ready for the next setup steps.
-# -----------------------------------------------------------------------------
 print("PyTorch version     :", torch.__version__)
+print("Torch CUDA build    :", torch.version.cuda)
 print("TorchVision version :", torchvision.__version__)
 print("NumPy version       :", np.__version__)
 print("OpenCV version      :", cv2.__version__)
@@ -291,10 +271,6 @@ print("Pillow version      :", PIL.__version__)
 
 # -----------------------------------------------------------------------------
 # 7. Verify GPU / CUDA availability
-# -----------------------------------------------------------------------------
-# EXPLANATION:
-# SAM3 inference should run on GPU. This check confirms whether CUDA is
-# available before continuing to later cells.
 # -----------------------------------------------------------------------------
 print("CUDA available      :", torch.cuda.is_available())
 
@@ -304,8 +280,8 @@ if not torch.cuda.is_available():
     )
 
 print("CUDA device count   :", torch.cuda.device_count())
+print("Current CUDA device :", torch.cuda.current_device())
 print("CUDA device name    :", torch.cuda.get_device_name(0))
-
 
 
 # =============================================================================
