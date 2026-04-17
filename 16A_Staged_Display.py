@@ -196,6 +196,115 @@ print("CACHE_DIR  :", CACHE_DIR)
 
 
 
+# =============================================================================
+# CELL 3A — CORE IMPORTS + SYSTEM CHECKS
+# =============================================================================
+# EXPLANATION:
+# This cell loads the core Python libraries needed for the notebook and performs
+# a quick runtime sanity check.
+#
+# WHAT THIS CELL DOES:
+#   1) imports standard library, data, image, and ML packages
+#   2) applies global warning settings
+#   3) confirms installed runtime versions
+#   4) verifies whether CUDA / GPU is available
+#
+# IMPORTANT:
+# - run this after CELL 2
+# - this is an early sanity check before model setup
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. Standard library imports
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These support file handling, configuration, paths, timing, typing, and
+# general notebook utilities used across later cells.
+# -----------------------------------------------------------------------------
+import os
+import gc
+import re
+import io
+import json
+import time
+import glob
+import math
+import shutil
+import random
+import zipfile
+import warnings
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
+
+# -----------------------------------------------------------------------------
+# 2. Data handling imports
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Pandas is used later for image manifests, tracking tables, and pipeline state.
+# -----------------------------------------------------------------------------
+import pandas as pd
+
+# -----------------------------------------------------------------------------
+# 3. Data science and visualisation imports
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These libraries support image loading, image processing, plotting, and
+# numerical operations used throughout the notebook.
+# -----------------------------------------------------------------------------
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import PIL
+from PIL import Image, ImageOps
+
+# -----------------------------------------------------------------------------
+# 4. Machine learning imports
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These are the core libraries used for GPU execution, tensor handling, and
+# later SAM3 model inference.
+# -----------------------------------------------------------------------------
+import torch
+import torchvision
+
+# -----------------------------------------------------------------------------
+# 5. Global warning behaviour
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Suppresses noisy warnings to keep notebook output cleaner during development.
+# -----------------------------------------------------------------------------
+warnings.filterwarnings("ignore")
+
+# -----------------------------------------------------------------------------
+# 6. Print runtime version information
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# This confirms that the expected package versions are active after the restart
+# and that the environment is ready for the next setup steps.
+# -----------------------------------------------------------------------------
+print("PyTorch version     :", torch.__version__)
+print("TorchVision version :", torchvision.__version__)
+print("NumPy version       :", np.__version__)
+print("OpenCV version      :", cv2.__version__)
+print("Pillow version      :", PIL.__version__)
+
+# -----------------------------------------------------------------------------
+# 7. Verify GPU / CUDA availability
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# SAM3 inference should run on GPU. This check confirms whether CUDA is
+# available before continuing to later cells.
+# -----------------------------------------------------------------------------
+print("CUDA available      :", torch.cuda.is_available())
+
+if not torch.cuda.is_available():
+    raise RuntimeError(
+        "CUDA/GPU is not available. Please attach this notebook to a GPU cluster before running SAM3."
+    )
+
+print("CUDA device count   :", torch.cuda.device_count())
+print("CUDA device name    :", torch.cuda.get_device_name(0))
 
 
 
