@@ -283,7 +283,453 @@ print("CUDA device count   :", torch.cuda.device_count())
 print("Current CUDA device :", torch.cuda.current_device())
 print("CUDA device name    :", torch.cuda.get_device_name(0))
 
+# =============================================================================
+# CELL 3B — GLOBAL CONSTANTS + NOTEBOOK CONFIG
+# =============================================================================
+# EXPLANATION:
+# This cell defines notebook-wide constants used across the Databricks SAM3
+# workflow.
+#
+# WHAT THIS CELL DOES:
+#   1) defines runtime / reproducibility constants
+#   2) defines general debug controls
+#   3) defines shared global SAM3 thresholds
+#   4) defines pole-detection prompts and post-processing settings
+#   5) defines production pole-gallery settings
+#   6) defines single-image crop-box debug settings (CELL 15A)
+#   7) defines fixed-canvas pole-top ROI settings (CELL 15B)
+#   8) defines crossarm debug / filtering / display settings (CELL 16A)
+#   9) defines shared visual and file-naming settings
+#  10) creates a shared SAM3_TASK_CONFIG dictionary
+#
+# IMPORTANT:
+# - run this after CELL 3A
+# - later inference cells should read these values from globals()
+# - path definitions remain in their existing path-specific cells
+# - this is intended to be the master config cell for the notebook
+# =============================================================================
 
+# -----------------------------------------------------------------------------
+# 1. Runtime / reproducibility
+# -----------------------------------------------------------------------------
+RANDOM_SEED = 42
+DEVICE = "cuda"
+
+random.seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(RANDOM_SEED)
+
+# -----------------------------------------------------------------------------
+# 2. General debug / notebook controls
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These control general notebook debug behaviour and image selection.
+# -----------------------------------------------------------------------------
+MAX_IMAGES_FOR_DEBUG_GALLERY = 8
+DEBUG_ROW_INDEX = 4
+
+# -----------------------------------------------------------------------------
+# 3. Shared global SAM3 thresholds
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Keep one shared threshold definition so later cells do not hardcode values.
+# TEXT threshold filters prompt matches.
+# MASK threshold filters pixel masks during post-processing.
+# -----------------------------------------------------------------------------
+GLOBAL_TEXT_SCORE_THRESHOLD = 0.30
+MASK_THRESHOLD = 0.50
+
+# -----------------------------------------------------------------------------
+# 4. Pole prompts + pole-detection config
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# POLE_PROMPTS is used in the multi-image debug pole cells.
+# POLE_PROMPT is the single production prompt for CELL 14C.
+# -----------------------------------------------------------------------------
+POLE_PROMPTS = [
+    "utility pole",
+]
+
+POLE_PROMPT = "timber power pole"
+POLE_TEXT_THRESHOLD = GLOBAL_TEXT_SCORE_THRESHOLD
+
+# -----------------------------------------------------------------------------
+# 5. Pole post-processing constants
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These are used for:
+# - prefiltering weak / tiny / short / wide / non-vertical candidates
+# - ranking the remaining candidates
+# - shaft penalty handling
+# -----------------------------------------------------------------------------
+POLE_MIN_SCORE = 0.25
+POLE_MIN_AREA_FRAC = 0.005      # 0.5% of image area
+POLE_MIN_HEIGHT_FRAC = 0.15     # 15% of image height
+POLE_MIN_ASPECT = 1.80          # bbox_h / bbox_w
+POLE_MAX_WIDTH_FRAC = 0.08      # max 8% of image width
+POLE_MAX_BOX_W_PX = 400         # absolute width guard
+
+# Shaft-penalty constants
+SHAFT_WIDTH_FRAC_THRESHOLD = 0.12
+SHAFT_PENALTY_FACTOR = 0.40
+
+# Final ranking weights
+W_X_CENTER = 0.45
+W_HEIGHT   = 0.30
+W_AREA     = 0.10
+W_CONF     = 0.10
+W_EDGE     = 0.05
+
+# -----------------------------------------------------------------------------
+# 6. Production pole gallery controls (CELL 14C)
+# -----------------------------------------------------------------------------
+POLE_GALLERY_COUNT = 6
+
+# -----------------------------------------------------------------------------
+# 7. Single-image crop-box debug settings (CELL 15A)
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These control the one-image crop-box tuning view after pole selection.
+# -----------------------------------------------------------------------------
+POLE_ROI_DEBUG_ROW_INDEX = 0
+
+EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT = 0.90
+MIN_EXPANDED_BOX_WIDTH = 600
+
+TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT = 0.10
+BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT = 0.20
+
+MIN_TOP_EXTRA_PIXELS = 40
+MIN_BOTTOM_EXTRA_PIXELS = 10
+
+# -----------------------------------------------------------------------------
+# 8. Fixed-canvas pole-top ROI settings (CELL 15B)
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These define the fixed-size saved ROI and padding behaviour for the Silver ROI
+# generation stage.
+# -----------------------------------------------------------------------------
+FIXED_ROI_WIDTH = 2600
+FIXED_ROI_HEIGHT = 2600
+POLE_TOP_BUFFER_ABOVE = 350
+PAD_RGB = (0, 0, 0)
+POLE_ROI_GALLERY_COUNT = 6
+
+# -----------------------------------------------------------------------------
+# 9. Crossarm debug / inference prompt settings (CELL 16A)
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These define the single-prompt crossarm debug run on the saved pole ROI crop.
+# -----------------------------------------------------------------------------
+CROSSARM_ROI_DEBUG_ROW_INDEX = 0
+CROSSARM_PROMPT_TEXT = "utility pole crossarm"
+CROSSARM_TEXT_THRESHOLD = 0.30
+RUN_PLOT_RESULTS_DIAGNOSTIC_CROSSARM = False
+
+# -----------------------------------------------------------------------------
+# 10. Crossarm filtering settings (CELL 16A)
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These drive:
+# - containment suppression
+# - main-cluster filtering
+# - pole-mask overlap filtering
+# - structure filtering
+# - level dedupe
+# - optional PCA screening
+# -----------------------------------------------------------------------------
+
+# Containment suppression
+CONTAINMENT_THRESHOLD = 0.80
+MIN_AREA_RATIO = 1.20
+MIN_SCORE_ADVANTAGE = 0.0
+
+# Main-cluster filtering
+CENTER_DIST_FACTOR = 2.75
+
+# Pole-mask overlap filtering
+POLE_MASK_FILTER_ENABLED = True
+POLE_OVERLAP_MIN_FRACTION = 0.05
+
+# Structure filtering
+CROSSARM_STRUCTURE_FILTER_ENABLED = True
+CROSSARM_MIN_ASPECT_RATIO = 1.50
+POLE_ATTACH_MARGIN_PX = 120
+MIN_RELATIVE_WIDTH_TO_MAX = 0.55
+
+# Level dedupe filtering
+CROSSARM_LEVEL_FILTER_ENABLED = True
+CROSSARM_LEVEL_BAND_FACTOR = 0.60
+MAX_BOX_H_TO_MEDIAN_RATIO = 1.80
+KEEP_PER_LEVEL = 1
+
+# Optional PCA filtering
+CROSSARM_PCA_FILTER_ENABLED = True
+PCA_SUSPICIOUS_ASPECT_MAX = 2.20
+PCA_SUSPICIOUS_HEIGHT_TO_MEDIAN_MIN = 1.15
+PCA_SUSPICIOUS_REL_WIDTH_MAX = 0.85
+PCA_MIN_MASK_PIXELS = 80
+PCA_MIN_PC1_RATIO = 0.85
+PCA_MIN_ANISOTROPY = 4.00
+
+# -----------------------------------------------------------------------------
+# 11. Crossarm display / stage-grid settings (CELL 16A)
+# -----------------------------------------------------------------------------
+CROSSARM_MASK_ALPHA = 0.40
+POLE_MASK_ALPHA = 0.30
+LABEL_BG = "#1E90FF"
+
+SHOW_STAGE_GRID = True
+GRID_FIGSIZE = (20, 10)
+
+# -----------------------------------------------------------------------------
+# 12. Visual troubleshooting constants
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These support the 3-stage pole overlay:
+# - raw      -> yellow
+# - kept     -> cyan
+# - selected -> red
+# -----------------------------------------------------------------------------
+STAGE_COLORS = {
+    "raw": "yellow",
+    "kept": "cyan",
+    "selected": "red",
+}
+
+STAGE_LINEWIDTHS = {
+    "raw": 2,
+    "kept": 2,
+    "selected": 3,
+}
+
+# -----------------------------------------------------------------------------
+# 13. Shared image-extension constants
+# -----------------------------------------------------------------------------
+VALID_IMAGE_EXTENSIONS = (
+    ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"
+)
+
+# -----------------------------------------------------------------------------
+# 14. Image-id naming constants
+# -----------------------------------------------------------------------------
+IMAGE_ID_PREFIX = "img"
+
+# -----------------------------------------------------------------------------
+# 15. Shared task config dictionary
+# -----------------------------------------------------------------------------
+SAM3_TASK_CONFIG = {
+    "runtime": {
+        "random_seed": RANDOM_SEED,
+        "device": DEVICE,
+    },
+
+    "debug": {
+        "max_images_for_debug_gallery": MAX_IMAGES_FOR_DEBUG_GALLERY,
+        "debug_row_index": DEBUG_ROW_INDEX,
+        "pole_gallery_count": POLE_GALLERY_COUNT,
+        "pole_roi_debug_row_index": POLE_ROI_DEBUG_ROW_INDEX,
+        "pole_roi_gallery_count": POLE_ROI_GALLERY_COUNT,
+        "crossarm_roi_debug_row_index": CROSSARM_ROI_DEBUG_ROW_INDEX,
+        "show_stage_grid": SHOW_STAGE_GRID,
+        "grid_figsize": GRID_FIGSIZE,
+        "run_plot_results_diagnostic_crossarm": RUN_PLOT_RESULTS_DIAGNOSTIC_CROSSARM,
+    },
+
+    "thresholds": {
+        "text_score_threshold": GLOBAL_TEXT_SCORE_THRESHOLD,
+        "mask_threshold": MASK_THRESHOLD,
+        "pole_text_threshold": POLE_TEXT_THRESHOLD,
+        "crossarm_text_threshold": CROSSARM_TEXT_THRESHOLD,
+    },
+
+    "pole_detection": {
+        "prompts": POLE_PROMPTS,
+        "prompt": POLE_PROMPT,
+        "text_score_threshold": POLE_TEXT_THRESHOLD,
+        "mask_threshold": MASK_THRESHOLD,
+    },
+
+    "pole_postprocess": {
+        "min_score": POLE_MIN_SCORE,
+        "min_area_frac": POLE_MIN_AREA_FRAC,
+        "min_height_frac": POLE_MIN_HEIGHT_FRAC,
+        "min_aspect": POLE_MIN_ASPECT,
+        "max_width_frac": POLE_MAX_WIDTH_FRAC,
+        "max_box_w_px": POLE_MAX_BOX_W_PX,
+        "shaft_width_frac_threshold": SHAFT_WIDTH_FRAC_THRESHOLD,
+        "shaft_penalty_factor": SHAFT_PENALTY_FACTOR,
+        "weights": {
+            "x_center": W_X_CENTER,
+            "height": W_HEIGHT,
+            "area": W_AREA,
+            "conf": W_CONF,
+            "edge": W_EDGE,
+        },
+    },
+
+    "pole_roi_debug": {
+        "expanded_box_width_factor_from_pole_height": EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT,
+        "min_expanded_box_width": MIN_EXPANDED_BOX_WIDTH,
+        "top_extra_factor_from_pole_height": TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT,
+        "bottom_extra_factor_from_pole_height": BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT,
+        "min_top_extra_pixels": MIN_TOP_EXTRA_PIXELS,
+        "min_bottom_extra_pixels": MIN_BOTTOM_EXTRA_PIXELS,
+    },
+
+    "pole_roi_fixed_canvas": {
+        "fixed_roi_width": FIXED_ROI_WIDTH,
+        "fixed_roi_height": FIXED_ROI_HEIGHT,
+        "pole_top_buffer_above": POLE_TOP_BUFFER_ABOVE,
+        "pad_rgb": PAD_RGB,
+    },
+
+    "crossarm_detection": {
+        "prompt_text": CROSSARM_PROMPT_TEXT,
+        "text_threshold": CROSSARM_TEXT_THRESHOLD,
+    },
+
+    "crossarm_filters": {
+        "containment_threshold": CONTAINMENT_THRESHOLD,
+        "min_area_ratio": MIN_AREA_RATIO,
+        "min_score_advantage": MIN_SCORE_ADVANTAGE,
+        "center_dist_factor": CENTER_DIST_FACTOR,
+        "pole_mask_filter_enabled": POLE_MASK_FILTER_ENABLED,
+        "pole_overlap_min_fraction": POLE_OVERLAP_MIN_FRACTION,
+        "structure_filter_enabled": CROSSARM_STRUCTURE_FILTER_ENABLED,
+        "crossarm_min_aspect_ratio": CROSSARM_MIN_ASPECT_RATIO,
+        "pole_attach_margin_px": POLE_ATTACH_MARGIN_PX,
+        "min_relative_width_to_max": MIN_RELATIVE_WIDTH_TO_MAX,
+        "level_filter_enabled": CROSSARM_LEVEL_FILTER_ENABLED,
+        "crossarm_level_band_factor": CROSSARM_LEVEL_BAND_FACTOR,
+        "max_box_h_to_median_ratio": MAX_BOX_H_TO_MEDIAN_RATIO,
+        "keep_per_level": KEEP_PER_LEVEL,
+        "pca_filter_enabled": CROSSARM_PCA_FILTER_ENABLED,
+        "pca_suspicious_aspect_max": PCA_SUSPICIOUS_ASPECT_MAX,
+        "pca_suspicious_height_to_median_min": PCA_SUSPICIOUS_HEIGHT_TO_MEDIAN_MIN,
+        "pca_suspicious_rel_width_max": PCA_SUSPICIOUS_REL_WIDTH_MAX,
+        "pca_min_mask_pixels": PCA_MIN_MASK_PIXELS,
+        "pca_min_pc1_ratio": PCA_MIN_PC1_RATIO,
+        "pca_min_anisotropy": PCA_MIN_ANISOTROPY,
+    },
+
+    "visual_debug": {
+        "stage_colors": STAGE_COLORS,
+        "stage_linewidths": STAGE_LINEWIDTHS,
+        "crossarm_mask_alpha": CROSSARM_MASK_ALPHA,
+        "pole_mask_alpha": POLE_MASK_ALPHA,
+        "label_bg": LABEL_BG,
+    },
+
+    "files": {
+        "valid_image_extensions": VALID_IMAGE_EXTENSIONS,
+    },
+
+    "naming": {
+        "image_id_prefix": IMAGE_ID_PREFIX,
+    },
+}
+
+# -----------------------------------------------------------------------------
+# 16. Print summary
+# -----------------------------------------------------------------------------
+print("Global constants loaded.\n")
+
+print("=" * 90)
+print("RUNTIME / GENERAL")
+print("=" * 90)
+print(f"DEVICE                              : {DEVICE}")
+print(f"RANDOM_SEED                         : {RANDOM_SEED}")
+print(f"MAX_IMAGES_FOR_DEBUG_GALLERY        : {MAX_IMAGES_FOR_DEBUG_GALLERY}")
+print(f"DEBUG_ROW_INDEX                     : {DEBUG_ROW_INDEX}")
+print(f"GLOBAL_TEXT_SCORE_THRESHOLD         : {GLOBAL_TEXT_SCORE_THRESHOLD}")
+print(f"MASK_THRESHOLD                      : {MASK_THRESHOLD}")
+
+print("\n" + "=" * 90)
+print("POLE DETECTION / POST-PROCESS")
+print("=" * 90)
+print(f"POLE_PROMPTS                        : {POLE_PROMPTS}")
+print(f"POLE_PROMPT                         : {POLE_PROMPT}")
+print(f"POLE_TEXT_THRESHOLD                 : {POLE_TEXT_THRESHOLD}")
+print(f"POLE_MIN_SCORE                      : {POLE_MIN_SCORE}")
+print(f"POLE_MIN_AREA_FRAC                  : {POLE_MIN_AREA_FRAC}")
+print(f"POLE_MIN_HEIGHT_FRAC                : {POLE_MIN_HEIGHT_FRAC}")
+print(f"POLE_MIN_ASPECT                     : {POLE_MIN_ASPECT}")
+print(f"POLE_MAX_WIDTH_FRAC                 : {POLE_MAX_WIDTH_FRAC}")
+print(f"POLE_MAX_BOX_W_PX                   : {POLE_MAX_BOX_W_PX}")
+print(f"SHAFT_WIDTH_FRAC_THRESHOLD          : {SHAFT_WIDTH_FRAC_THRESHOLD}")
+print(f"SHAFT_PENALTY_FACTOR                : {SHAFT_PENALTY_FACTOR}")
+print(f"W_X_CENTER                          : {W_X_CENTER}")
+print(f"W_HEIGHT                            : {W_HEIGHT}")
+print(f"W_AREA                              : {W_AREA}")
+print(f"W_CONF                              : {W_CONF}")
+print(f"W_EDGE                              : {W_EDGE}")
+print(f"POLE_GALLERY_COUNT                  : {POLE_GALLERY_COUNT}")
+
+print("\n" + "=" * 90)
+print("CELL 15A — SINGLE-IMAGE CROP BOX")
+print("=" * 90)
+print(f"POLE_ROI_DEBUG_ROW_INDEX            : {POLE_ROI_DEBUG_ROW_INDEX}")
+print(f"EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT : {EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT}")
+print(f"MIN_EXPANDED_BOX_WIDTH              : {MIN_EXPANDED_BOX_WIDTH}")
+print(f"TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT   : {TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT}")
+print(f"BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT: {BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT}")
+print(f"MIN_TOP_EXTRA_PIXELS                : {MIN_TOP_EXTRA_PIXELS}")
+print(f"MIN_BOTTOM_EXTRA_PIXELS             : {MIN_BOTTOM_EXTRA_PIXELS}")
+
+print("\n" + "=" * 90)
+print("CELL 15B — FIXED POLE-TOP ROI")
+print("=" * 90)
+print(f"FIXED_ROI_WIDTH                     : {FIXED_ROI_WIDTH}")
+print(f"FIXED_ROI_HEIGHT                    : {FIXED_ROI_HEIGHT}")
+print(f"POLE_TOP_BUFFER_ABOVE               : {POLE_TOP_BUFFER_ABOVE}")
+print(f"PAD_RGB                             : {PAD_RGB}")
+print(f"POLE_ROI_GALLERY_COUNT              : {POLE_ROI_GALLERY_COUNT}")
+
+print("\n" + "=" * 90)
+print("CELL 16A — CROSSARM DEBUG / FILTERS")
+print("=" * 90)
+print(f"CROSSARM_ROI_DEBUG_ROW_INDEX        : {CROSSARM_ROI_DEBUG_ROW_INDEX}")
+print(f"CROSSARM_PROMPT_TEXT                : {CROSSARM_PROMPT_TEXT}")
+print(f"CROSSARM_TEXT_THRESHOLD             : {CROSSARM_TEXT_THRESHOLD}")
+print(f"RUN_PLOT_RESULTS_DIAGNOSTIC_CROSSARM: {RUN_PLOT_RESULTS_DIAGNOSTIC_CROSSARM}")
+print(f"CONTAINMENT_THRESHOLD               : {CONTAINMENT_THRESHOLD}")
+print(f"MIN_AREA_RATIO                      : {MIN_AREA_RATIO}")
+print(f"MIN_SCORE_ADVANTAGE                 : {MIN_SCORE_ADVANTAGE}")
+print(f"CENTER_DIST_FACTOR                  : {CENTER_DIST_FACTOR}")
+print(f"POLE_MASK_FILTER_ENABLED            : {POLE_MASK_FILTER_ENABLED}")
+print(f"POLE_OVERLAP_MIN_FRACTION           : {POLE_OVERLAP_MIN_FRACTION}")
+print(f"CROSSARM_STRUCTURE_FILTER_ENABLED   : {CROSSARM_STRUCTURE_FILTER_ENABLED}")
+print(f"CROSSARM_MIN_ASPECT_RATIO           : {CROSSARM_MIN_ASPECT_RATIO}")
+print(f"POLE_ATTACH_MARGIN_PX               : {POLE_ATTACH_MARGIN_PX}")
+print(f"MIN_RELATIVE_WIDTH_TO_MAX           : {MIN_RELATIVE_WIDTH_TO_MAX}")
+print(f"CROSSARM_LEVEL_FILTER_ENABLED       : {CROSSARM_LEVEL_FILTER_ENABLED}")
+print(f"CROSSARM_LEVEL_BAND_FACTOR          : {CROSSARM_LEVEL_BAND_FACTOR}")
+print(f"MAX_BOX_H_TO_MEDIAN_RATIO           : {MAX_BOX_H_TO_MEDIAN_RATIO}")
+print(f"KEEP_PER_LEVEL                      : {KEEP_PER_LEVEL}")
+print(f"CROSSARM_PCA_FILTER_ENABLED         : {CROSSARM_PCA_FILTER_ENABLED}")
+print(f"PCA_SUSPICIOUS_ASPECT_MAX           : {PCA_SUSPICIOUS_ASPECT_MAX}")
+print(f"PCA_SUSPICIOUS_HEIGHT_TO_MEDIAN_MIN : {PCA_SUSPICIOUS_HEIGHT_TO_MEDIAN_MIN}")
+print(f"PCA_SUSPICIOUS_REL_WIDTH_MAX        : {PCA_SUSPICIOUS_REL_WIDTH_MAX}")
+print(f"PCA_MIN_MASK_PIXELS                 : {PCA_MIN_MASK_PIXELS}")
+print(f"PCA_MIN_PC1_RATIO                   : {PCA_MIN_PC1_RATIO}")
+print(f"PCA_MIN_ANISOTROPY                  : {PCA_MIN_ANISOTROPY}")
+print(f"CROSSARM_MASK_ALPHA                 : {CROSSARM_MASK_ALPHA}")
+print(f"POLE_MASK_ALPHA                     : {POLE_MASK_ALPHA}")
+print(f"LABEL_BG                            : {LABEL_BG}")
+print(f"SHOW_STAGE_GRID                     : {SHOW_STAGE_GRID}")
+print(f"GRID_FIGSIZE                        : {GRID_FIGSIZE}")
+
+print("\n" + "=" * 90)
+print("FILES / NAMING / VISUALS")
+print("=" * 90)
+print(f"VALID_IMAGE_EXTENSIONS              : {VALID_IMAGE_EXTENSIONS}")
+print(f"IMAGE_ID_PREFIX                     : {IMAGE_ID_PREFIX}")
+print(f"STAGE_COLORS                        : {STAGE_COLORS}")
+print(f"STAGE_LINEWIDTHS                    : {STAGE_LINEWIDTHS}")
 # =============================================================================
 # CELL 3B — GLOBAL CONSTANTS + NOTEBOOK CONFIG
 # =============================================================================
