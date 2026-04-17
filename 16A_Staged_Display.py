@@ -88,11 +88,11 @@ FINAL SAM3 CODE
 import os
 
 os.environ["HF_HOME"] = (
-    "/Volumes/advanalytics_dev_catalog/aa_brett/vol_brett/models/hf_cache"
+    "/Volumes/models/hf_cache"
 )
 
 os.environ["HF_HUB_CACHE"] = (
-    "/Volumes/advanalytics_dev_catalog/aa_brett/vol_brett/models/hf_cache/hub"
+    "/Volumes/models/hf_cache/hub"
 )
 
 # -----------------------------------------------------------------------------
@@ -155,11 +155,11 @@ print("CACHE_DIR  :", CACHE_DIR)
 import os
 
 os.environ["HF_HOME"] = (
-    "/Volumes/advanalytics_dev_catalog/aa_brett/vol_brett/models/hf_cache"
+    "/Volumes/models/hf_cache"
 )
 
 os.environ["HF_HUB_CACHE"] = (
-    "/Volumes/advanalytics_dev_catalog/aa_brett/vol_brett/models/hf_cache/hub"
+    "/Volumes/models/hf_cache/hub"
 )
 
 # -----------------------------------------------------------------------------
@@ -432,8 +432,7 @@ print(f"STAGE_COLORS                  : {STAGE_COLORS}")
 import sys
 
 SAM3_REPO_ROOT = (
-    "/Volumes/advanalytics_dev_catalog/"
-    "aa_brett/vol_brett/repos/sam3"
+    "/Volumes/repos/sam3"
 )
 
 if not os.path.isdir(SAM3_REPO_ROOT):
@@ -595,8 +594,7 @@ print("Default dtype       :", torch.get_default_dtype())
 # vocabulary file used for text prompts.
 # -----------------------------------------------------------------------------
 sam3_root = (
-    "/Volumes/advanalytics_dev_catalog/"
-    "aa_brett/vol_brett/repos/sam3/sam3"
+    "/Volumes/repos/sam3/sam3"
 )
 
 # -----------------------------------------------------------------------------
@@ -615,7 +613,7 @@ bpe_path = f"{sam3_root}/assets/bpe_simple_vocab_16e6.txt.gz"
 # -----------------------------------------------------------------------------
 checkpoint_path = (
     "/Volumes/advanalytics_dev_catalog/"
-    "aa_brett/vol_brett/models/hf_cache/hub/sam3/sam3.pt"
+    "models/hf_cache/hub/sam3/sam3.pt"
 )
 
 # -----------------------------------------------------------------------------
@@ -685,8 +683,7 @@ bpe_path = f"{sam3_root}/assets/bpe_simple_vocab_16e6.txt.gz"
 # This is the SAM3 weight file stored in the shared Hugging Face cache.
 # -----------------------------------------------------------------------------
 checkpoint_path = (
-    "/Volumes/advanalytics_dev_catalog/"
-    "aa_brett/vol_brett/models/hf_cache/hub/sam3/sam3.pt"
+    "/Volumes/models/hf_cache/hub/sam3/sam3.pt"
 )
 
 # -----------------------------------------------------------------------------
@@ -854,8 +851,7 @@ print("Processor type:", type(processor))
 # Volume.
 # -----------------------------------------------------------------------------
 WORK_DIR = (
-    "/Volumes/advanalytics_dev_catalog/"
-    "aa_sharyn/sharyn_volume/"
+    "/Volumes/"
     "sam3_project"
 )
 
@@ -1015,8 +1011,7 @@ if missing_globals:
 # ingest into the Bronze layer for this project.
 # -----------------------------------------------------------------------------
 SOURCE_IMAGE_ROOT = (
-    "/Volumes/advanalytics_dev_catalog/"
-    "aa_sharyn/sharyn_volume/sam3_project/"
+    "/Volumes/"
     "test_images"
 )
 
