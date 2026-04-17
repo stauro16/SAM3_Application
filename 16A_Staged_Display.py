@@ -46,16 +46,19 @@ FINAL SAM3 CODE
 
 
 # =============================================================================
-# CELL 1B - HARD RESTART PYTHON (MANDATORY)
+# CELL 1B — HARD RESTART PYTHON (MANDATORY)
 # =============================================================================
 # EXPLANATION:
 # Databricks must restart the Python process so the newly installed packages
 # are correctly loaded into the notebook session.
 #
 # IMPORTANT:
-# - run this immediately after CELL 1
+# - run this immediately after CELL 1A
 # - re-run the notebook from CELL 2 after restart
 # =============================================================================
+
+dbutils.library.restartPython()
+
 
 
 
