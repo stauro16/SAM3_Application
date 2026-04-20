@@ -1557,40 +1557,41 @@ print(f"  IMAGE_ID_PREFIX    : {IMAGE_ID_PREFIX}")
 
 
 
-
-
 # =============================================================================
-# CELL 13 — PRODUCTION POLE SELECTION + SAVED OVERLAYS
+# CELL 13 — PRODUCTION POLE SELECTION + QA OVERLAY SAVING
 # =============================================================================
 # EXPLANATION:
-# This cell runs production pole selection across all images in run_images_df
-# and saves one final pole overlay image per input image.
+# This cell runs production pole selection across all images in run_images_df.
+#
+# DESIGN:
+# - Full-resolution data is preserved for downstream processing.
+# - Smaller overlay PNGs are saved only for human QA / review.
 #
 # WHAT THIS CELL DOES:
-#   1) validates that the production inputs already exist
-#   2) runs SAM3 on every image in run_images_df
+#   1) validates that required production inputs already exist
+#   2) runs SAM3 pole prompting across all images in run_images_df
 #   3) collects all raw pole candidates across all configured pole prompts
-#   4) normalises boxes, scores, and masks into a stable production format
+#   4) normalizes boxes, scores, and masks into a stable production format
 #   5) computes per-image pole ranking features
 #   6) prefilters weak / tiny / short / wide / non-vertical candidates
 #   7) scores remaining candidates using shaft-penalty weighting
 #   8) selects one best pole per image when available
-#   9) builds and saves one final pole overlay image per input image using the
-#      selected-stage matplotlib style, scaled for full-resolution saving
-#  10) saves production outputs for downstream ROI and crossarm stages
+#   9) saves one smaller QA overlay PNG per image
+#  10) keeps DataFrame coordinates + masks at full resolution
+#  11) prunes pole_mask_lookup down to selected poles only after selection
 #
 # OUTPUTS:
 # - pole_candidates_df : all scored pole candidates across all run images
-# - pole_selection_df  : one row per image, with either a selected pole
-#                        or a no-reliable-pole status row
-# - pole_mask_lookup   : mask lookup keyed by (image_id, prompt, det_idx)
+# - pole_selection_df  : one row per image with full-resolution selected-pole data
+# - pole_mask_lookup   : full-resolution mask lookup keyed by (image_id, prompt, det_idx)
+#                        but pruned to selected poles only
 #
 # IMPORTANT:
-# - this is the production replacement for the old debug pole cells
-# - this cell does NOT use debug_images_df
-# - this cell does NOT produce debug galleries or plot_results(.) diagnostics
-# - this cell expects CELL 10 to have already defined:
-#     SILVER_POLE_SELECTION_OVERLAYS
+# - Overlay PNGs are for human QA only.
+# - Downstream cells should use:
+#     - original image_path
+#     - full-resolution x1/y1/x2/y2 values from pole_selection_df
+#     - pole_mask_lookup for full-resolution selected-pole masks
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -1602,8 +1603,8 @@ required_globals = [
     "processor",
     "DEVICE",
     "SILVER_POLE_SELECTION_OVERLAYS",
+    "POLE_OVERLAY_MAX_WIDTH",
     "POLE_PROMPT_TEXT",
-    "POLE_TEXT_THRESHOLD",
     "POLE_MIN_SCORE",
     "POLE_MIN_AREA_FRAC",
     "POLE_MIN_HEIGHT_FRAC",
@@ -1646,11 +1647,10 @@ if run_images_df.empty:
 
 if not isinstance(POLE_PROMPT_TEXT, (list, tuple)) or len(POLE_PROMPT_TEXT) == 0:
     raise ValueError(
-        "POLE_PROMPT_TEXT must be a non-empty list/tuple in the production notebook."
+        "POLE_PROMPT_TEXT must be a non-empty list or tuple in the production notebook."
     )
 
-if not os.path.isdir(SILVER_POLE_SELECTION_OVERLAYS):
-    os.makedirs(SILVER_POLE_SELECTION_OVERLAYS, exist_ok=True)
+os.makedirs(SILVER_POLE_SELECTION_OVERLAYS, exist_ok=True)
 
 # -----------------------------------------------------------------------------
 # 1. Small helpers
@@ -1661,7 +1661,7 @@ def _to_numpy_safe(x):
 
     Args:
         x:
-            Tensor / array-like object or None.
+            Tensor, numpy array, array-like object, or None.
 
     Returns:
         Numpy array or None.
@@ -1671,6 +1671,7 @@ def _to_numpy_safe(x):
     if isinstance(x, torch.Tensor):
         return x.detach().cpu().numpy()
     return np.asarray(x)
+
 
 def _candidate_key(image_id, prompt, det_idx):
     """
@@ -1688,6 +1689,7 @@ def _candidate_key(image_id, prompt, det_idx):
         Tuple key suitable for mask lookup dictionaries.
     """
     return (str(image_id), str(prompt), int(det_idx))
+
 
 def _infer_num_detections(raw_boxes, raw_scores, raw_masks):
     """
@@ -1731,9 +1733,19 @@ def _infer_num_detections(raw_boxes, raw_scores, raw_masks):
 
     return 0
 
+
 def _normalize_boxes_local(raw_boxes, num_detections):
     """
     Normalize raw boxes into a stable (N, 4) float32 array.
+
+    Args:
+        raw_boxes:
+            Raw boxes object from processor state.
+        num_detections:
+            Expected number of detections.
+
+    Returns:
+        Float32 numpy array of shape (num_detections, 4).
     """
     if num_detections <= 0:
         return np.zeros((0, 4), dtype=np.float32)
@@ -1755,9 +1767,19 @@ def _normalize_boxes_local(raw_boxes, num_detections):
 
     return arr[:num_detections]
 
+
 def _normalize_scores_local(raw_scores, num_detections):
     """
     Normalize raw scores into a stable (N,) float32 array.
+
+    Args:
+        raw_scores:
+            Raw scores object from processor state.
+        num_detections:
+            Expected number of detections.
+
+    Returns:
+        Float32 numpy array of shape (num_detections,).
     """
     if num_detections <= 0:
         return np.zeros((0,), dtype=np.float32)
@@ -1773,9 +1795,23 @@ def _normalize_scores_local(raw_scores, num_detections):
 
     return arr[:num_detections]
 
+
 def _normalize_masks_local(raw_masks, num_detections, image_h, image_w):
     """
     Normalize raw masks into a list of 2D boolean masks.
+
+    Args:
+        raw_masks:
+            Raw masks object from processor state.
+        num_detections:
+            Expected number of detections.
+        image_h:
+            Source image height.
+        image_w:
+            Source image width.
+
+    Returns:
+        List of length num_detections containing 2D boolean masks or None.
     """
     if num_detections <= 0:
         return []
@@ -1794,15 +1830,9 @@ def _normalize_masks_local(raw_masks, num_detections, image_h, image_w):
         if arr.ndim == 2:
             mask_items = [arr]
         elif arr.ndim == 3:
-            if arr.shape[0] == num_detections:
-                mask_items = [arr[i] for i in range(arr.shape[0])]
-            else:
-                mask_items = [arr[i] for i in range(min(arr.shape[0], num_detections))]
+            mask_items = [arr[i] for i in range(min(arr.shape[0], num_detections))]
         elif arr.ndim == 4:
-            if arr.shape[0] == num_detections:
-                mask_items = [arr[i] for i in range(arr.shape[0])]
-            else:
-                mask_items = [arr[i] for i in range(min(arr.shape[0], num_detections))]
+            mask_items = [arr[i] for i in range(min(arr.shape[0], num_detections))]
         else:
             return [None] * num_detections
 
@@ -1841,9 +1871,21 @@ def _normalize_masks_local(raw_masks, num_detections, image_h, image_w):
 
     return norm_masks[:num_detections]
 
+
 def _clip_box_to_image(x1, y1, x2, y2, image_w, image_h):
     """
     Clip and sort box coordinates to stay inside image bounds.
+
+    Args:
+        x1, y1, x2, y2:
+            Raw box coordinates.
+        image_w:
+            Source image width.
+        image_h:
+            Source image height.
+
+    Returns:
+        Tuple of clipped and ordered coordinates.
     """
     x1 = float(np.clip(x1, 0, max(image_w - 1, 0)))
     y1 = float(np.clip(y1, 0, max(image_h - 1, 0)))
@@ -1855,9 +1897,21 @@ def _clip_box_to_image(x1, y1, x2, y2, image_w, image_h):
 
     return x1, y1, x2, y2
 
+
 def _build_pole_overlay_label(prompt, score, final_score):
     """
-    Build the exact pole overlay label text to save for later reuse.
+    Build the label text that will be rendered on the saved QA overlay.
+
+    Args:
+        prompt:
+            Selected prompt string.
+        score:
+            Raw SAM score.
+        final_score:
+            Final pole ranking score.
+
+    Returns:
+        Human-readable label string.
     """
     label_bits = ["POLE"]
 
@@ -1872,12 +1926,30 @@ def _build_pole_overlay_label(prompt, score, final_score):
 
     return " | ".join(label_bits)
 
+
 def _build_overlay_output_path(row, image_id):
     """
-    Build the output path for the saved pole overlay image.
+    Build the output path for the saved pole QA overlay image.
+
+    Args:
+        row:
+            Input row from run_images_df.
+        image_id:
+            Stable image identifier.
+
+    Returns:
+        Absolute output path for the saved overlay PNG.
     """
-    relative_image_path = row["relative_image_path"]
+    relative_image_path = None
+
+    if "relative_image_path" in row.index:
+        relative_image_path = row["relative_image_path"]
+
+    if not isinstance(relative_image_path, str) or len(relative_image_path.strip()) == 0:
+        relative_image_path = row["file_name"]
+
     relative_dir = os.path.dirname(relative_image_path)
+    base_stem = os.path.splitext(os.path.basename(relative_image_path))[0]
 
     if relative_dir in ("", "."):
         target_dir = SILVER_POLE_SELECTION_OVERLAYS
@@ -1886,8 +1958,9 @@ def _build_overlay_output_path(row, image_id):
 
     os.makedirs(target_dir, exist_ok=True)
 
-    overlay_file_name = f"{image_id}_pole_overlay.png"
+    overlay_file_name = f"{base_stem}__{image_id}__pole_overlay.png"
     return os.path.join(target_dir, overlay_file_name)
+
 
 def _save_selected_overlay_matplotlib(
     image_rgb,
@@ -1897,54 +1970,124 @@ def _save_selected_overlay_matplotlib(
     label_text=None,
 ):
     """
-    Save the final pole overlay using the selected-stage matplotlib style,
-    scaled so labels remain readable on full-resolution saved images.
-    """
-    image_h, image_w = image_rgb.shape[:2]
+    Save a smaller human-QA pole overlay image.
 
+    IMPORTANT:
+    - The overlay PNG may be downscaled for readability and smaller file size.
+    - This does NOT change the full-resolution data stored in DataFrames or
+      mask lookup objects.
+    - Downstream cells should not use the saved overlay PNG as the source of truth.
+
+    Args:
+        image_rgb:
+            Full-resolution RGB image as a numpy array.
+        output_path:
+            Path where the QA overlay PNG should be saved.
+        selected_row:
+            Selected-pole row with full-resolution coordinates, or None.
+        mask_2d:
+            Full-resolution boolean mask for the selected pole, or None.
+        label_text:
+            Text to render on the overlay.
+
+    Returns:
+        Dict containing overlay metadata:
+        - overlay_image_path
+        - overlay_resize_ratio
+        - overlay_image_w
+        - overlay_image_h
+    """
+    full_h, full_w = image_rgb.shape[:2]
+
+    # -------------------------------------------------------------------------
+    # 1. Downscale only the QA overlay image if it is wider than the cap.
+    # -------------------------------------------------------------------------
+    overlay_resize_ratio = min(
+        1.0,
+        float(POLE_OVERLAY_MAX_WIDTH) / float(max(full_w, 1))
+    )
+
+    if overlay_resize_ratio < 1.0:
+        vis_w = int(round(full_w * overlay_resize_ratio))
+        vis_h = int(round(full_h * overlay_resize_ratio))
+
+        image_rgb_vis = cv2.resize(
+            image_rgb,
+            (vis_w, vis_h),
+            interpolation=cv2.INTER_AREA,
+        )
+
+        if selected_row is not None:
+            selected_row_vis = selected_row.copy()
+            for col in ["x1", "y1", "x2", "y2"]:
+                selected_row_vis[col] = float(selected_row_vis[col]) * overlay_resize_ratio
+        else:
+            selected_row_vis = None
+
+        if isinstance(mask_2d, np.ndarray) and mask_2d.ndim == 2:
+            mask_2d_vis = cv2.resize(
+                mask_2d.astype(np.uint8),
+                (vis_w, vis_h),
+                interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+        else:
+            mask_2d_vis = None
+    else:
+        image_rgb_vis = image_rgb
+        selected_row_vis = selected_row.copy() if selected_row is not None else None
+        mask_2d_vis = mask_2d
+        vis_h, vis_w = image_rgb_vis.shape[:2]
+
+    # -------------------------------------------------------------------------
+    # 2. Build a clean no-margin figure for the QA overlay.
+    # -------------------------------------------------------------------------
     dpi = 100
-    fig = plt.figure(figsize=(image_w / dpi, image_h / dpi), dpi=dpi)
+    fig = plt.figure(figsize=(vis_w / dpi, vis_h / dpi), dpi=dpi)
     ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
 
-    ax.imshow(image_rgb)
+    ax.imshow(image_rgb_vis)
     ax.axis("off")
 
     # -------------------------------------------------------------------------
-    # Scale overlay elements from the Cell 3B baseline settings.
-    # Reference width = 1200 px.
-    # Clamp the scale so very large images do not produce absurdly large labels.
+    # 3. Modestly scale overlay styling using the resized QA width.
+    # EXPLANATION:
+    # The overlay image is already capped in width, so only a modest style
+    # scaling is needed. Keep a minimum floor so labels are not too thin.
     # -------------------------------------------------------------------------
-    scale = float(np.clip(image_w / 1200.0, 1.0, 3.5))
+    style_scale = float(np.clip(vis_w / 1200.0, 1.0, 1.5))
 
-    label_fontsize = POLE_SELECTED_LABEL_FONTSIZE * scale
-    box_linewidth = POLE_SELECTED_BOX_LINEWIDTH * scale
-    label_pad = POLE_SELECTED_LABEL_BBOX_PAD * scale
-    label_y_offset = POLE_SELECTED_LABEL_Y_OFFSET * scale
+    label_fontsize = max(POLE_SELECTED_LABEL_FONTSIZE * style_scale, 12.0)
+    box_linewidth = max(POLE_SELECTED_BOX_LINEWIDTH * style_scale, 3.0)
+    label_pad = max(POLE_SELECTED_LABEL_BBOX_PAD * style_scale, 2.5)
+    label_y_offset = max(
+        POLE_SELECTED_LABEL_Y_OFFSET * style_scale,
+        label_fontsize * 1.2,
+    )
 
     # -------------------------------------------------------------------------
-    # Draw selected mask
+    # 4. Draw selected mask.
     # -------------------------------------------------------------------------
     if (
-        isinstance(mask_2d, np.ndarray)
-        and mask_2d.ndim == 2
-        and mask_2d.shape == image_rgb.shape[:2]
-        and mask_2d.sum() > 0
+        isinstance(mask_2d_vis, np.ndarray)
+        and mask_2d_vis.ndim == 2
+        and mask_2d_vis.shape == image_rgb_vis.shape[:2]
+        and mask_2d_vis.sum() > 0
     ):
-        overlay = np.zeros((mask_2d.shape[0], mask_2d.shape[1], 4), dtype=np.float32)
+        overlay = np.zeros((mask_2d_vis.shape[0], mask_2d_vis.shape[1], 4), dtype=np.float32)
         overlay[..., 0] = POLE_SELECTED_MASK_RGB[0]
         overlay[..., 1] = POLE_SELECTED_MASK_RGB[1]
         overlay[..., 2] = POLE_SELECTED_MASK_RGB[2]
-        overlay[..., 3] = mask_2d.astype(np.float32) * POLE_SELECTED_MASK_ALPHA
+        overlay[..., 3] = mask_2d_vis.astype(np.float32) * POLE_SELECTED_MASK_ALPHA
         ax.imshow(overlay)
 
     # -------------------------------------------------------------------------
-    # Draw selected box + label
+    # 5. Draw selected box + label.
     # -------------------------------------------------------------------------
-    if selected_row is not None:
-        x1 = float(selected_row["x1"])
-        y1 = float(selected_row["y1"])
-        x2 = float(selected_row["x2"])
-        y2 = float(selected_row["y2"])
+    if selected_row_vis is not None:
+        x1 = float(selected_row_vis["x1"])
+        y1 = float(selected_row_vis["y1"])
+        x2 = float(selected_row_vis["x2"])
+        y2 = float(selected_row_vis["y2"])
 
         rect = patches.Rectangle(
             (x1, y1),
@@ -1959,7 +2102,7 @@ def _save_selected_overlay_matplotlib(
         if label_text is not None and str(label_text).strip():
             ax.text(
                 x1,
-                max(y1 - label_y_offset, 8 * scale),
+                max(y1 - label_y_offset, 8 * style_scale),
                 str(label_text).strip(),
                 fontsize=label_fontsize,
                 color=POLE_SELECTED_TEXT_COLOR,
@@ -1973,8 +2116,8 @@ def _save_selected_overlay_matplotlib(
     else:
         if label_text is not None and str(label_text).strip():
             ax.text(
-                8 * scale,
-                18 * scale,
+                8 * style_scale,
+                18 * style_scale,
                 str(label_text).strip(),
                 fontsize=label_fontsize,
                 color=POLE_SELECTED_TEXT_COLOR,
@@ -1993,7 +2136,13 @@ def _save_selected_overlay_matplotlib(
     )
     plt.close(fig)
 
-    return output_path
+    return {
+        "overlay_image_path": output_path,
+        "overlay_resize_ratio": float(overlay_resize_ratio),
+        "overlay_image_w": int(vis_w),
+        "overlay_image_h": int(vis_h),
+    }
+
 
 def _make_no_reliable_pole_row(
     image_id,
@@ -2005,10 +2154,10 @@ def _make_no_reliable_pole_row(
     n_kept_candidates,
     fallback_triggered,
     overlay_label_text,
-    overlay_image_path,
+    overlay_meta,
 ):
     """
-    Build a consistent no-reliable-pole selection row.
+    Build one consistent no-reliable-pole output row.
     """
     return {
         "image_id": image_id,
@@ -2018,6 +2167,7 @@ def _make_no_reliable_pole_row(
         "image_h": int(image_h),
         "selection_status": "no_reliable_pole_found",
         "selection_mode": "no_reliable_pole_found",
+        "is_selected_pole": False,
         "n_raw_candidates": int(n_raw_candidates),
         "n_kept_candidates": int(n_kept_candidates),
         "prompt": None,
@@ -2042,7 +2192,10 @@ def _make_no_reliable_pole_row(
         "has_mask": False,
         "fallback_triggered": bool(fallback_triggered),
         "overlay_label_text": overlay_label_text,
-        "overlay_image_path": overlay_image_path,
+        "overlay_image_path": overlay_meta["overlay_image_path"],
+        "overlay_resize_ratio": overlay_meta["overlay_resize_ratio"],
+        "overlay_image_w": overlay_meta["overlay_image_w"],
+        "overlay_image_h": overlay_meta["overlay_image_h"],
     }
 
 # -----------------------------------------------------------------------------
@@ -2065,9 +2218,11 @@ for row_idx in range(len(run_images_df)):
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Image file not found: {image_path}")
 
+    # -------------------------------------------------------------------------
+    # Load the full-resolution source image.
+    # -------------------------------------------------------------------------
     with Image.open(image_path) as img:
-        original_mode = img.mode
-        if original_mode != "RGB":
+        if img.mode != "RGB":
             image = img.convert("RGB")
         else:
             image = img.copy()
@@ -2085,6 +2240,9 @@ for row_idx in range(len(run_images_df)):
 
     raw_rows = []
 
+    # -------------------------------------------------------------------------
+    # Run all configured pole prompts.
+    # -------------------------------------------------------------------------
     for prompt in POLE_PROMPT_TEXT:
         reset_result = processor.reset_all_prompts(state)
         if reset_result is not None:
@@ -2110,7 +2268,11 @@ for row_idx in range(len(run_images_df)):
             box_area = box_w * box_h
 
             mask_2d = masks_2d[det_idx] if det_idx < len(masks_2d) else None
-            has_mask = isinstance(mask_2d, np.ndarray) and mask_2d.ndim == 2 and mask_2d.sum() > 0
+            has_mask = (
+                isinstance(mask_2d, np.ndarray)
+                and mask_2d.ndim == 2
+                and mask_2d.sum() > 0
+            )
 
             key = _candidate_key(image_id, prompt, det_idx)
             if has_mask:
@@ -2138,13 +2300,16 @@ for row_idx in range(len(run_images_df)):
     raw_df = pd.DataFrame(raw_rows)
     n_raw_candidates = int(len(raw_df))
 
+    # -------------------------------------------------------------------------
+    # No-detection case.
+    # -------------------------------------------------------------------------
     if raw_df.empty:
         overlay_label_text = NO_RELIABLE_POLE_LABEL_TEXT
-        overlay_image_path = _build_overlay_output_path(row=row, image_id=image_id)
+        overlay_output_path = _build_overlay_output_path(row=row, image_id=image_id)
 
-        _save_selected_overlay_matplotlib(
+        overlay_meta = _save_selected_overlay_matplotlib(
             image_rgb=image_rgb,
-            output_path=overlay_image_path,
+            output_path=overlay_output_path,
             selected_row=None,
             mask_2d=None,
             label_text=overlay_label_text,
@@ -2161,11 +2326,14 @@ for row_idx in range(len(run_images_df)):
                 n_kept_candidates=0,
                 fallback_triggered=False,
                 overlay_label_text=overlay_label_text,
-                overlay_image_path=overlay_image_path,
+                overlay_meta=overlay_meta,
             )
         )
         continue
 
+    # -------------------------------------------------------------------------
+    # Add full-resolution production features.
+    # -------------------------------------------------------------------------
     scored_df = raw_df.copy()
 
     scored_df["pole_cx"] = (scored_df["x1"] + scored_df["x2"]) / 2.0
@@ -2219,6 +2387,9 @@ for row_idx in range(len(run_images_df)):
         1.0
     )
 
+    # -------------------------------------------------------------------------
+    # Prefilter candidates.
+    # -------------------------------------------------------------------------
     scored_df["keep_score"] = scored_df["score"] >= POLE_MIN_SCORE
     scored_df["keep_area"] = scored_df["area_frac"] >= POLE_MIN_AREA_FRAC
     scored_df["keep_height"] = scored_df["height_frac"] >= POLE_MIN_HEIGHT_FRAC
@@ -2318,6 +2489,9 @@ for row_idx in range(len(run_images_df)):
     if len(selected_df) > 1:
         raise RuntimeError(f"Multiple poles selected for image_id={image_id}")
 
+    # -------------------------------------------------------------------------
+    # Exactly one selected pole.
+    # -------------------------------------------------------------------------
     if len(selected_df) == 1:
         best_row = selected_df.iloc[0]
 
@@ -2334,11 +2508,11 @@ for row_idx in range(len(run_images_df)):
         )
         selected_mask = pole_mask_lookup.get(selected_mask_key, None)
 
-        overlay_image_path = _build_overlay_output_path(row=row, image_id=image_id)
+        overlay_output_path = _build_overlay_output_path(row=row, image_id=image_id)
 
-        _save_selected_overlay_matplotlib(
+        overlay_meta = _save_selected_overlay_matplotlib(
             image_rgb=image_rgb,
-            output_path=overlay_image_path,
+            output_path=overlay_output_path,
             selected_row=best_row,
             mask_2d=selected_mask,
             label_text=overlay_label_text,
@@ -2352,6 +2526,7 @@ for row_idx in range(len(run_images_df)):
             "image_h": int(image_h),
             "selection_status": "selected",
             "selection_mode": str(best_row["selection_mode"]),
+            "is_selected_pole": True,
             "n_raw_candidates": n_raw_candidates,
             "n_kept_candidates": n_kept_candidates,
             "prompt": str(best_row["prompt"]),
@@ -2371,22 +2546,33 @@ for row_idx in range(len(run_images_df)):
             "height_frac": float(best_row["height_frac"]),
             "area_frac": float(best_row["area_frac"]),
             "aspect_ratio": float(best_row["aspect_ratio"]),
-            "shaft_penalty": float(best_row["shaft_penalty"])
-                if pd.notna(best_row["shaft_penalty"]) else np.nan,
-            "final_score": float(best_row["final_score"])
-                if pd.notna(best_row["final_score"]) else np.nan,
+            "shaft_penalty": (
+                float(best_row["shaft_penalty"])
+                if pd.notna(best_row["shaft_penalty"]) else np.nan
+            ),
+            "final_score": (
+                float(best_row["final_score"])
+                if pd.notna(best_row["final_score"]) else np.nan
+            ),
             "has_mask": bool(best_row["has_mask"]),
             "fallback_triggered": bool(fallback_triggered),
             "overlay_label_text": overlay_label_text,
-            "overlay_image_path": overlay_image_path,
+            "overlay_image_path": overlay_meta["overlay_image_path"],
+            "overlay_resize_ratio": overlay_meta["overlay_resize_ratio"],
+            "overlay_image_w": overlay_meta["overlay_image_w"],
+            "overlay_image_h": overlay_meta["overlay_image_h"],
         })
+
+    # -------------------------------------------------------------------------
+    # No selected pole after scoring / fallback.
+    # -------------------------------------------------------------------------
     else:
         overlay_label_text = NO_RELIABLE_POLE_LABEL_TEXT
-        overlay_image_path = _build_overlay_output_path(row=row, image_id=image_id)
+        overlay_output_path = _build_overlay_output_path(row=row, image_id=image_id)
 
-        _save_selected_overlay_matplotlib(
+        overlay_meta = _save_selected_overlay_matplotlib(
             image_rgb=image_rgb,
-            output_path=overlay_image_path,
+            output_path=overlay_output_path,
             selected_row=None,
             mask_2d=None,
             label_text=overlay_label_text,
@@ -2403,7 +2589,7 @@ for row_idx in range(len(run_images_df)):
                 n_kept_candidates=n_kept_candidates,
                 fallback_triggered=fallback_triggered,
                 overlay_label_text=overlay_label_text,
-                overlay_image_path=overlay_image_path,
+                overlay_meta=overlay_meta,
             )
         )
 
@@ -2419,7 +2605,25 @@ pole_candidates_df = (
 pole_selection_df = pd.DataFrame(selection_rows)
 
 # -----------------------------------------------------------------------------
-# 4. Reorder key columns for readability
+# 4. Prune mask lookup to selected poles only
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Candidate masks are useful during selection, but downstream cells only need
+# the selected pole mask. Prune the lookup now to reduce memory pressure.
+# -----------------------------------------------------------------------------
+selected_keys = {
+    _candidate_key(r["image_id"], r["prompt"], int(r["det_idx"]))
+    for _, r in pole_selection_df.iterrows()
+    if r.get("selection_status") == "selected" and pd.notna(r.get("det_idx"))
+}
+
+pole_mask_lookup = {
+    k: v for k, v in pole_mask_lookup.items()
+    if k in selected_keys
+}
+
+# -----------------------------------------------------------------------------
+# 5. Reorder key columns for readability
 # -----------------------------------------------------------------------------
 candidate_front_cols = [
     "image_id",
@@ -2462,6 +2666,7 @@ selection_front_cols = [
     "image_path",
     "selection_status",
     "selection_mode",
+    "is_selected_pole",
     "n_raw_candidates",
     "n_kept_candidates",
     "prompt",
@@ -2487,6 +2692,9 @@ selection_front_cols = [
     "fallback_triggered",
     "overlay_label_text",
     "overlay_image_path",
+    "overlay_resize_ratio",
+    "overlay_image_w",
+    "overlay_image_h",
 ]
 
 if not pole_selection_df.empty:
@@ -2495,7 +2703,7 @@ if not pole_selection_df.empty:
     pole_selection_df = pole_selection_df[selection_existing_front_cols + selection_remaining_cols]
 
 # -----------------------------------------------------------------------------
-# 5. Final checks
+# 6. Final checks
 # -----------------------------------------------------------------------------
 selected_count = int(
     (pole_selection_df["selection_status"] == "selected").sum()
@@ -2524,7 +2732,7 @@ if len(missing_overlay_files) > 0:
     )
 
 # -----------------------------------------------------------------------------
-# 6. Persist only production outputs
+# 7. Persist only production outputs
 # -----------------------------------------------------------------------------
 if "save_state" in globals():
     save_state(
@@ -2537,7 +2745,7 @@ if "save_state" in globals():
         ],
         config_extra={
             "POLE_PROMPT_TEXT": POLE_PROMPT_TEXT,
-            "POLE_TEXT_THRESHOLD": POLE_TEXT_THRESHOLD,
+            "POLE_OVERLAY_MAX_WIDTH": POLE_OVERLAY_MAX_WIDTH,
             "POLE_MIN_SCORE": POLE_MIN_SCORE,
             "POLE_MIN_AREA_FRAC": POLE_MIN_AREA_FRAC,
             "POLE_MIN_HEIGHT_FRAC": POLE_MIN_HEIGHT_FRAC,
@@ -2572,7 +2780,7 @@ else:
     )
 
 # -----------------------------------------------------------------------------
-# 7. Final summary
+# 8. Final summary
 # -----------------------------------------------------------------------------
 print("CELL 13 production completed.")
 print(f"run_images_df rows          : {len(run_images_df)}")
@@ -2582,3 +2790,8 @@ print(f"selected poles              : {selected_count}")
 print(f"no_reliable_pole_found rows : {no_reliable_count}")
 print(f"pole_mask_lookup entries    : {len(pole_mask_lookup)}")
 print(f"overlay folder              : {SILVER_POLE_SELECTION_OVERLAYS}")
+print(f"overlay max width           : {POLE_OVERLAY_MAX_WIDTH}")
+
+
+
+
