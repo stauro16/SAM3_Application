@@ -1,5 +1,5 @@
-PROD CODE SAM3
-=====================
+PROD CODE 1 TO 13 FINAL
+=========================
 # =============================================================================
 # CELL 1A — DEPENDENCY INSTALL
 # =============================================================================
@@ -55,6 +55,7 @@ PROD CODE SAM3
 # =============================================================================
 
 dbutils.library.restartPython()
+
 
 
 
@@ -125,6 +126,7 @@ print("CACHE_DIR  :", CACHE_DIR)
 
 
 
+
 # =============================================================================
 # CELL 3A — CORE IMPORTS + SYSTEM CHECKS
 # =============================================================================
@@ -155,7 +157,6 @@ import time
 import glob
 import math
 import shutil
-import random
 import zipfile
 import warnings
 from pathlib import Path
@@ -211,6 +212,7 @@ if not torch.cuda.is_available():
 print("CUDA device count   :", torch.cuda.device_count())
 print("Current CUDA device :", torch.cuda.current_device())
 print("CUDA device name    :", torch.cuda.get_device_name(0))
+
 
 
 
@@ -301,13 +303,16 @@ W_EDGE     = 0.05
 POLE_SELECTED_MASK_RGB = (1.0, 0.0, 0.0)
 POLE_SELECTED_MASK_ALPHA = 0.28
 POLE_SELECTED_BOX_COLOR = "red"
-POLE_SELECTED_BOX_LINEWIDTH = 3.5
+POLE_SELECTED_BOX_LINEWIDTH = 3.0
 POLE_SELECTED_TEXT_COLOR = "white"
-POLE_SELECTED_LABEL_FONTSIZE = 8.5
+POLE_SELECTED_LABEL_FONTSIZE = 14
 POLE_SELECTED_LABEL_BG_ALPHA = 0.85
-POLE_SELECTED_LABEL_BBOX_PAD = 2.0
-POLE_SELECTED_LABEL_Y_OFFSET = 6
+POLE_SELECTED_LABEL_BBOX_PAD = 4
+POLE_SELECTED_LABEL_Y_OFFSET = 12
+POLE_OVERLAY_MAX_WIDTH = 1600
 NO_RELIABLE_POLE_LABEL_TEXT = "NO RELIABLE POLE FOUND"
+
+# ==========================================================================================
 
 # -----------------------------------------------------------------------------
 # 6. Single-image crop-box debug settings (CELL 15A)
@@ -717,7 +722,6 @@ print("SAM3_REPO_ROOT  :", SAM3_REPO_ROOT)
 
 
 
-
 # =============================================================================
 # CELL 5 — SAM3 IMPORTS
 # =============================================================================
@@ -780,7 +784,6 @@ print("SAM3 imports ready.")
 print("build_sam3_image_model loaded")
 print("Sam3Processor loaded")
 print("SAM3 utility functions loaded")
-
 
 
 
@@ -896,7 +899,6 @@ print(f"CHECKPOINT_PATH: {CHECKPOINT_PATH}")
 
 
 
-
 # =============================================================================
 # CELL 8 — BUILD SAM3 MODEL
 # =============================================================================
@@ -970,7 +972,6 @@ print("Model device         :", next(model.parameters()).device)
 
 
 
-
 # =============================================================================
 # CELL 9 — BUILD SAM3 PROCESSOR
 # =============================================================================
@@ -995,7 +996,6 @@ processor = Sam3Processor(model)
 # -----------------------------------------------------------------------------
 print("SAM3 processor created successfully.")
 print("Processor type:", type(processor))
-
 
 
 
@@ -1164,8 +1164,6 @@ print(f"GOLD_CROSSARM_DETECTIONS    : {GOLD_CROSSARM_DETECTIONS}")
 
 
 
-
-
 # -----------------------------------------------------------------------------
 # Run controls
 # -----------------------------------------------------------------------------
@@ -1174,9 +1172,6 @@ print(f"GOLD_CROSSARM_DETECTIONS    : {GOLD_CROSSARM_DETECTIONS}")
 # changed easily before rerunning ingestion.
 # -----------------------------------------------------------------------------
 OVERWRITE_BRONZE = True   # set to False to protect Bronze
-
-
-
 
 
 
@@ -1232,6 +1227,7 @@ if missing_globals:
 # -----------------------------------------------------------------------------
 SOURCE_IMAGE_ROOT = (
     "/Volumes/"
+    "sam3_project/"
     "test_images"
 )
 
@@ -1553,6 +1549,7 @@ if run_images_df["image_id"].duplicated().any():
 print("Production image manifest preparation complete.\n")
 print(f"  run_images_df rows : {len(run_images_df)}")
 print(f"  IMAGE_ID_PREFIX    : {IMAGE_ID_PREFIX}")
+
 
 
 
@@ -2057,7 +2054,7 @@ def _save_selected_overlay_matplotlib(
     style_scale = float(np.clip(vis_w / 1200.0, 1.0, 1.5))
 
     label_fontsize = max(POLE_SELECTED_LABEL_FONTSIZE * style_scale, 12.0)
-    box_linewidth = max(POLE_SELECTED_BOX_LINEWIDTH * style_scale, 3.0)
+    box_linewidth = max(POLE_SELECTED_BOX_LINEWIDTH * style_scale, 1.5)
     label_pad = max(POLE_SELECTED_LABEL_BBOX_PAD * style_scale, 2.5)
     label_y_offset = max(
         POLE_SELECTED_LABEL_Y_OFFSET * style_scale,
@@ -2791,7 +2788,4 @@ print(f"no_reliable_pole_found rows : {no_reliable_count}")
 print(f"pole_mask_lookup entries    : {len(pole_mask_lookup)}")
 print(f"overlay folder              : {SILVER_POLE_SELECTION_OVERLAYS}")
 print(f"overlay max width           : {POLE_OVERLAY_MAX_WIDTH}")
-
-
-
 
