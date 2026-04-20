@@ -1555,6 +1555,10 @@ print(f"  run_images_df rows : {len(run_images_df)}")
 print(f"  IMAGE_ID_PREFIX    : {IMAGE_ID_PREFIX}")
 
 
+
+
+
+
 # =============================================================================
 # CELL 13 — PRODUCTION POLE SELECTION + SAVED OVERLAYS
 # =============================================================================
@@ -1572,7 +1576,7 @@ print(f"  IMAGE_ID_PREFIX    : {IMAGE_ID_PREFIX}")
 #   7) scores remaining candidates using shaft-penalty weighting
 #   8) selects one best pole per image when available
 #   9) builds and saves one final pole overlay image per input image using the
-#      old selected-stage matplotlib style
+#      selected-stage matplotlib style, scaled for full-resolution saving
 #  10) saves production outputs for downstream ROI and crossarm stages
 #
 # OUTPUTS:
@@ -1584,7 +1588,7 @@ print(f"  IMAGE_ID_PREFIX    : {IMAGE_ID_PREFIX}")
 # IMPORTANT:
 # - this is the production replacement for the old debug pole cells
 # - this cell does NOT use debug_images_df
-# - this cell does NOT produce debug galleries or plot_results(...) diagnostics
+# - this cell does NOT produce debug galleries or plot_results(.) diagnostics
 # - this cell expects CELL 10 to have already defined:
 #     SILVER_POLE_SELECTION_OVERLAYS
 # =============================================================================
@@ -1893,7 +1897,8 @@ def _save_selected_overlay_matplotlib(
     label_text=None,
 ):
     """
-    Save the final pole overlay using the old selected-stage matplotlib style.
+    Save the final pole overlay using the selected-stage matplotlib style,
+    scaled so labels remain readable on full-resolution saved images.
     """
     image_h, image_w = image_rgb.shape[:2]
 
@@ -1904,7 +1909,27 @@ def _save_selected_overlay_matplotlib(
     ax.imshow(image_rgb)
     ax.axis("off")
 
-    if isinstance(mask_2d, np.ndarray) and mask_2d.ndim == 2 and mask_2d.shape == image_rgb.shape[:2] and mask_2d.sum() > 0:
+    # -------------------------------------------------------------------------
+    # Scale overlay elements from the Cell 3B baseline settings.
+    # Reference width = 1200 px.
+    # Clamp the scale so very large images do not produce absurdly large labels.
+    # -------------------------------------------------------------------------
+    scale = float(np.clip(image_w / 1200.0, 1.0, 3.5))
+
+    label_fontsize = POLE_SELECTED_LABEL_FONTSIZE * scale
+    box_linewidth = POLE_SELECTED_BOX_LINEWIDTH * scale
+    label_pad = POLE_SELECTED_LABEL_BBOX_PAD * scale
+    label_y_offset = POLE_SELECTED_LABEL_Y_OFFSET * scale
+
+    # -------------------------------------------------------------------------
+    # Draw selected mask
+    # -------------------------------------------------------------------------
+    if (
+        isinstance(mask_2d, np.ndarray)
+        and mask_2d.ndim == 2
+        and mask_2d.shape == image_rgb.shape[:2]
+        and mask_2d.sum() > 0
+    ):
         overlay = np.zeros((mask_2d.shape[0], mask_2d.shape[1], 4), dtype=np.float32)
         overlay[..., 0] = POLE_SELECTED_MASK_RGB[0]
         overlay[..., 1] = POLE_SELECTED_MASK_RGB[1]
@@ -1912,6 +1937,9 @@ def _save_selected_overlay_matplotlib(
         overlay[..., 3] = mask_2d.astype(np.float32) * POLE_SELECTED_MASK_ALPHA
         ax.imshow(overlay)
 
+    # -------------------------------------------------------------------------
+    # Draw selected box + label
+    # -------------------------------------------------------------------------
     if selected_row is not None:
         x1 = float(selected_row["x1"])
         y1 = float(selected_row["y1"])
@@ -1922,7 +1950,7 @@ def _save_selected_overlay_matplotlib(
             (x1, y1),
             max(0.0, x2 - x1),
             max(0.0, y2 - y1),
-            linewidth=POLE_SELECTED_BOX_LINEWIDTH,
+            linewidth=box_linewidth,
             edgecolor=POLE_SELECTED_BOX_COLOR,
             facecolor="none",
         )
@@ -1931,30 +1959,30 @@ def _save_selected_overlay_matplotlib(
         if label_text is not None and str(label_text).strip():
             ax.text(
                 x1,
-                max(y1 - POLE_SELECTED_LABEL_Y_OFFSET, 8),
+                max(y1 - label_y_offset, 8 * scale),
                 str(label_text).strip(),
-                fontsize=POLE_SELECTED_LABEL_FONTSIZE,
+                fontsize=label_fontsize,
                 color=POLE_SELECTED_TEXT_COLOR,
                 bbox=dict(
                     facecolor=POLE_SELECTED_BOX_COLOR,
                     alpha=POLE_SELECTED_LABEL_BG_ALPHA,
                     edgecolor="none",
-                    pad=POLE_SELECTED_LABEL_BBOX_PAD,
+                    pad=label_pad,
                 ),
             )
     else:
         if label_text is not None and str(label_text).strip():
             ax.text(
-                8,
-                18,
+                8 * scale,
+                18 * scale,
                 str(label_text).strip(),
-                fontsize=POLE_SELECTED_LABEL_FONTSIZE,
+                fontsize=label_fontsize,
                 color=POLE_SELECTED_TEXT_COLOR,
                 bbox=dict(
                     facecolor=POLE_SELECTED_BOX_COLOR,
                     alpha=POLE_SELECTED_LABEL_BG_ALPHA,
                     edgecolor="none",
-                    pad=POLE_SELECTED_LABEL_BBOX_PAD,
+                    pad=label_pad,
                 ),
             )
 
