@@ -188,7 +188,9 @@ def build_roi_output_path(row, image_id):
             Selected pole row.
 
         image_id:
-            Stable image identifier.
+            Stable image identifier. Kept in the signature for compatibility,
+            but not used in the filename because the relative folder structure
+            already provides organisation and the image stem is human-readable.
 
     Returns:
         tuple:
@@ -210,7 +212,6 @@ def build_roi_output_path(row, image_id):
 
     relative_dir = os.path.dirname(relative_image_path)
     base_stem = os.path.splitext(os.path.basename(relative_image_path))[0]
-    safe_image_id = make_safe_stem(image_id if image_id is not None else base_stem)
 
     if relative_dir in ("", "."):
         target_dir = SILVER_POLE_ROIS
@@ -219,7 +220,7 @@ def build_roi_output_path(row, image_id):
 
     os.makedirs(target_dir, exist_ok=True)
 
-    roi_file_name = f"{base_stem}__{safe_image_id}__pole_roi.png"
+    roi_file_name = f"{base_stem}__pole_roi.png"
     roi_image_path = os.path.join(target_dir, roi_file_name)
 
     return roi_file_name, roi_image_path
