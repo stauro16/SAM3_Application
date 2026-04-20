@@ -183,14 +183,17 @@ def build_roi_output_path(row, image_id):
     Preserve relative subfolder structure when possible so the Silver ROI folder
     stays organised the same way as the input image set.
 
+    Filename strategy:
+    - keep the original image stem for readability
+    - append only the trailing numeric identifier from image_id
+    - avoid repeating the full stem twice
+
     Args:
         row:
             Selected pole row.
 
         image_id:
-            Stable image identifier. Kept in the signature for compatibility,
-            but not used in the filename because the relative folder structure
-            already provides organisation and the image stem is human-readable.
+            Stable image identifier, e.g. img_1298075_003_2060_V_0
 
     Returns:
         tuple:
@@ -213,6 +216,19 @@ def build_roi_output_path(row, image_id):
     relative_dir = os.path.dirname(relative_image_path)
     base_stem = os.path.splitext(os.path.basename(relative_image_path))[0]
 
+    # -------------------------------------------------------------------------
+    # Extract only the trailing numeric id from image_id.
+    # Example:
+    #   img_1298075_003_2060_V_0 -> 0
+    # -------------------------------------------------------------------------
+    suffix_id = "0"
+
+    if image_id is not None:
+        image_id_str = str(image_id).strip()
+        match = re.search(r"_(\d+)$", image_id_str)
+        if match:
+            suffix_id = match.group(1)
+
     if relative_dir in ("", "."):
         target_dir = SILVER_POLE_ROIS
     else:
@@ -220,7 +236,7 @@ def build_roi_output_path(row, image_id):
 
     os.makedirs(target_dir, exist_ok=True)
 
-    roi_file_name = f"{base_stem}__pole_roi.png"
+    roi_file_name = f"{base_stem}__{suffix_id}__pole_roi.png"
     roi_image_path = os.path.join(target_dir, roi_file_name)
 
     return roi_file_name, roi_image_path
