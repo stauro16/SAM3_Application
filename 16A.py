@@ -1,3 +1,1449 @@
+15-16 Current 
+==================
+# =============================================================================
+# CELL 15A — DRAW CROP BOX ON ONE IMAGE (DEBUG)
+# =============================================================================
+# EXPLANATION:
+# This cell is the Databricks single-image debug version of the Colab crop-box
+# step that follows pole selection.
+#
+# WHAT THIS CELL DOES:
+#   1) reads pole_selection_df from CELL 14C
+#   2) selects exactly ONE row using a debug index
+#   3) requires that the chosen row has a selected pole
+#   4) builds an expanded crop / ROI box around that selected pole
+#   5) draws:
+#        - selected pole box = red solid
+#        - expanded crop box = cyan dashed
+#   6) creates pole_roi_debug_df for the next downstream crop/save step
+#
+# IMPORTANT:
+# - this cell does NOT crop and save images yet
+# - this cell only computes and visualizes the crop box geometry
+# - this is the single-image debug bridge between CELL 14C and the later
+#   all-images ROI extraction step
+# - POLE_ROI_DEBUG_ROW_INDEX indexes into pole_selection_df, which has one
+#   row per image across ALL of run_images_df — not just the 8-row debug
+#   subset. DEBUG_ROW_INDEX (value 4) is NOT a safe default here. The
+#   default is 0. Override POLE_ROI_DEBUG_ROW_INDEX before running if you
+#   want a different row.
+#
+# INPUT:
+# - pole_selection_df from CELL 14C
+#
+# OUTPUT:
+# - pole_roi_debug_df : exactly one row containing the selected pole + crop box
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 0. SAFETY CHECKS
+# -----------------------------------------------------------------------------
+required_globals = [
+    "pole_selection_df",
+]
+
+missing_globals = [name for name in required_globals if name not in globals()]
+if missing_globals:
+    raise NameError(
+        "CELL 15A cannot run because some required variables are missing.\n"
+        "Please run CELL 14C first.\n"
+        f"Missing globals: {missing_globals}"
+    )
+
+if not isinstance(pole_selection_df, pd.DataFrame):
+    raise TypeError("pole_selection_df exists but is not a pandas DataFrame.")
+
+if pole_selection_df.empty:
+    raise ValueError("pole_selection_df is empty. Please check CELL 14C.")
+
+# -----------------------------------------------------------------------------
+# 1. DEBUG ROW + CROP BOX CONFIG
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Use the same general expansion strategy as your earlier Colab crop-box step.
+# This is kept explicit here so you can tune it easily before moving to 15B.
+#
+# IMPORTANT:
+# POLE_ROI_DEBUG_ROW_INDEX indexes into pole_selection_df, which spans all
+# run_images_df rows — not the 8-row debug subset. The default is 0.
+# To inspect a different image, set POLE_ROI_DEBUG_ROW_INDEX before running
+# this cell, e.g.:
+#   POLE_ROI_DEBUG_ROW_INDEX = 3
+# -----------------------------------------------------------------------------
+POLE_ROI_DEBUG_ROW_INDEX = int(globals().get("POLE_ROI_DEBUG_ROW_INDEX", 0))
+
+EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT = float(
+    globals().get("EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT", 0.90)
+)
+MIN_EXPANDED_BOX_WIDTH = float(
+    globals().get("MIN_EXPANDED_BOX_WIDTH", 600)
+)
+
+TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT = float(
+    globals().get("TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT", 0.10)
+)
+BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT = float(
+    globals().get("BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT", 0.20)
+)
+
+MIN_TOP_EXTRA_PIXELS = float(
+    globals().get("MIN_TOP_EXTRA_PIXELS", 40)
+)
+MIN_BOTTOM_EXTRA_PIXELS = float(
+    globals().get("MIN_BOTTOM_EXTRA_PIXELS", 10)
+)
+
+print("Single-image crop-box config:")
+print(f"  POLE_ROI_DEBUG_ROW_INDEX                    : {POLE_ROI_DEBUG_ROW_INDEX}")
+print(f"  pole_selection_df rows                      : {len(pole_selection_df)}")
+print(f"  EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT : {EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT}")
+print(f"  MIN_EXPANDED_BOX_WIDTH                     : {MIN_EXPANDED_BOX_WIDTH}")
+print(f"  TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT          : {TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT}")
+print(f"  BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT       : {BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT}")
+print(f"  MIN_TOP_EXTRA_PIXELS                       : {MIN_TOP_EXTRA_PIXELS}")
+print(f"  MIN_BOTTOM_EXTRA_PIXELS                    : {MIN_BOTTOM_EXTRA_PIXELS}")
+
+# -----------------------------------------------------------------------------
+# 2. HELPER: SAFE DISPLAY
+# -----------------------------------------------------------------------------
+def _safe_display(obj):
+    """
+    Display a pandas object in a notebook if possible; otherwise print it.
+
+    Args:
+        obj:
+            Object to display.
+
+    Returns:
+        None
+    """
+    try:
+        display(obj)
+    except Exception:
+        print("WARNING: display() unavailable, falling back to print().")
+        print(obj)
+
+# -----------------------------------------------------------------------------
+# 3. HELPER: CANDIDATE KEY
+# -----------------------------------------------------------------------------
+def _candidate_key(image_id, prompt, det_idx):
+    """
+    Build the same mask-lookup key used in CELL 14C.
+
+    Args:
+        image_id:
+            Stable image identifier.
+
+        prompt:
+            Pole prompt used for the selected detection.
+
+        det_idx:
+            Detection index within that prompt run.
+
+    Returns:
+        tuple:
+            (image_id, prompt, det_idx) as a stable lookup key.
+    """
+    return (str(image_id), str(prompt), int(det_idx))
+
+# -----------------------------------------------------------------------------
+# 4. HELPER: BUILD EXPANDED BOX FROM SELECTED POLE
+# -----------------------------------------------------------------------------
+def _build_expanded_box_from_pole(
+    pole_x1,
+    pole_y1,
+    pole_x2,
+    pole_y2,
+    image_w,
+    image_h,
+    width_factor_from_pole_height,
+    min_box_width,
+    top_extra_factor_from_pole_height,
+    bottom_extra_factor_from_pole_height,
+    min_top_extra_pixels,
+    min_bottom_extra_pixels,
+):
+    """
+    Build a larger ROI box around the selected pole.
+
+    Args:
+        pole_x1, pole_y1, pole_x2, pole_y2:
+            Selected pole box coordinates.
+
+        image_w, image_h:
+            Full image dimensions.
+
+        width_factor_from_pole_height:
+            ROI width multiplier based on pole height.
+
+        min_box_width:
+            Minimum allowed ROI width in pixels.
+
+        top_extra_factor_from_pole_height:
+            Extra height above the pole top.
+
+        bottom_extra_factor_from_pole_height:
+            Extra height below the pole bottom.
+
+        min_top_extra_pixels, min_bottom_extra_pixels:
+            Minimum top / bottom expansion in pixels.
+
+    Returns:
+        dict:
+            Expanded ROI geometry.
+    """
+    # Compute basic pole geometry.
+    pole_w = max(0.0, pole_x2 - pole_x1)
+    pole_h = max(0.0, pole_y2 - pole_y1)
+    pole_cx = pole_x1 + pole_w / 2.0
+    pole_cy = pole_y1 + pole_h / 2.0
+
+    # Set crop width mainly from pole height, with a hard minimum.
+    expanded_w = max(
+        float(min_box_width),
+        float(round(pole_h * width_factor_from_pole_height)),
+    )
+
+    # Expand vertically using separate top / bottom rules.
+    top_extra = max(
+        float(min_top_extra_pixels),
+        float(round(pole_h * top_extra_factor_from_pole_height)),
+    )
+
+    bottom_extra = max(
+        float(min_bottom_extra_pixels),
+        float(round(pole_h * bottom_extra_factor_from_pole_height)),
+    )
+
+    half_w = expanded_w / 2.0
+
+    ex1 = pole_cx - half_w
+    ex2 = pole_cx + half_w
+    ey1 = pole_y1 - top_extra
+    ey2 = pole_y2 + bottom_extra
+
+    # -------------------------------------------------------------------------
+    # Clamp to image bounds
+    # -------------------------------------------------------------------------
+    # If the box spills left, shift it right first.
+    if ex1 < 0:
+        ex2 -= ex1
+        ex1 = 0.0
+
+    # If the box spills right, shift it left.
+    if ex2 > image_w:
+        shift = ex2 - image_w
+        ex1 -= shift
+        ex2 = float(image_w)
+
+    # Clamp top / bottom directly.
+    if ey1 < 0:
+        ey1 = 0.0
+
+    if ey2 > image_h:
+        ey2 = float(image_h)
+
+    # Final hard clamp.
+    ex1 = max(0.0, ex1)
+    ex2 = min(float(image_w), ex2)
+    ey1 = max(0.0, ey1)
+    ey2 = min(float(image_h), ey2)
+
+    final_w = max(0.0, ex2 - ex1)
+    final_h = max(0.0, ey2 - ey1)
+
+    return {
+        "expanded_x1": float(ex1),
+        "expanded_y1": float(ey1),
+        "expanded_x2": float(ex2),
+        "expanded_y2": float(ey2),
+        "expanded_w": float(final_w),
+        "expanded_h": float(final_h),
+        "pole_w": float(pole_w),
+        "pole_h": float(pole_h),
+        "pole_cx": float(pole_cx),
+        "pole_cy": float(pole_cy),
+    }
+
+# -----------------------------------------------------------------------------
+# 5. HELPER: DRAW SELECTED POLE + EXPANDED CROP BOX
+# -----------------------------------------------------------------------------
+def draw_selected_pole_and_crop_box(ax, image_rgb, row, title):
+    """
+    Draw the selected pole box and the expanded crop box.
+
+    VISUAL STYLE:
+    - selected pole box = red solid
+    - expanded crop box = cyan dashed
+
+    Args:
+        ax:
+            Matplotlib axis.
+
+        image_rgb:
+            RGB numpy image.
+
+        row:
+            Row-like object containing selected pole + crop box coordinates.
+
+        title:
+            Plot title.
+
+    Returns:
+        None
+    """
+    ax.imshow(image_rgb)
+    ax.set_title(title, fontsize=11)
+    ax.axis("off")
+
+    # -------------------------------------------------------------------------
+    # Red selected pole box
+    # -------------------------------------------------------------------------
+    pole_x1 = float(row["x1"])
+    pole_y1 = float(row["y1"])
+    pole_x2 = float(row["x2"])
+    pole_y2 = float(row["y2"])
+
+    pole_w = pole_x2 - pole_x1
+    pole_h = pole_y2 - pole_y1
+
+    selected_rect = patches.Rectangle(
+        (pole_x1, pole_y1),
+        pole_w,
+        pole_h,
+        linewidth=3.0,
+        edgecolor="red",
+        facecolor="none",
+    )
+    ax.add_patch(selected_rect)
+
+    # -------------------------------------------------------------------------
+    # Cyan dashed expanded crop box
+    # -------------------------------------------------------------------------
+    ex1 = float(row["expanded_x1"])
+    ey1 = float(row["expanded_y1"])
+    ew = float(row["expanded_w"])
+    eh = float(row["expanded_h"])
+
+    expanded_rect = patches.Rectangle(
+        (ex1, ey1),
+        ew,
+        eh,
+        linewidth=2.4,
+        edgecolor="cyan",
+        linestyle="--",
+        facecolor="none",
+        alpha=0.95,
+    )
+    ax.add_patch(expanded_rect)
+
+    # -------------------------------------------------------------------------
+    # Red label for selected pole
+    # -------------------------------------------------------------------------
+    prompt_text = None
+    if "prompt" in row and pd.notna(row["prompt"]) and str(row["prompt"]).strip():
+        prompt_text = str(row["prompt"]).strip()
+    elif "POLE_PROMPT" in globals():
+        prompt_text = str(POLE_PROMPT).strip()
+    else:
+        prompt_text = "timber power pole"
+
+    pole_label = f"POLE | {prompt_text}"
+    if "score" in row and pd.notna(row["score"]):
+        pole_label += f" | score={float(row['score']):.3f}"
+    if "final_score" in row and pd.notna(row["final_score"]):
+        pole_label += f" | final={float(row['final_score']):.3f}"
+
+    ax.text(
+        pole_x1,
+        max(5, pole_y1 - 6),
+        pole_label,
+        color="white",
+        fontsize=8.5,
+        bbox=dict(facecolor="red", alpha=0.95, pad=1.5, edgecolor="none"),
+    )
+
+    # -------------------------------------------------------------------------
+    # Cyan label for expanded crop box
+    # -------------------------------------------------------------------------
+    crop_label = f"CROP BOX | {int(round(ew))}x{int(round(eh))}"
+
+    ax.text(
+        ex1,
+        min(ey1 + 18, float(row["image_h"]) - 10),
+        crop_label,
+        color="black",
+        fontsize=8.0,
+        bbox=dict(facecolor="cyan", alpha=0.90, pad=1.5, edgecolor="none"),
+    )
+
+# -----------------------------------------------------------------------------
+# 6. SELECT EXACTLY ONE ROW FROM pole_selection_df
+# -----------------------------------------------------------------------------
+if POLE_ROI_DEBUG_ROW_INDEX >= len(pole_selection_df):
+    raise IndexError(
+        f"POLE_ROI_DEBUG_ROW_INDEX={POLE_ROI_DEBUG_ROW_INDEX} is out of range for "
+        f"pole_selection_df with {len(pole_selection_df)} rows.\n"
+        "pole_selection_df spans all run_images_df rows, not just the debug subset."
+    )
+
+selected_row = pole_selection_df.reset_index(drop=True).iloc[POLE_ROI_DEBUG_ROW_INDEX]
+
+image_id = selected_row.get("image_id", None)
+file_name = selected_row.get("file_name", None)
+image_path = selected_row.get("image_path", None)
+selection_status = selected_row.get("selection_status", "unknown")
+
+if pd.isna(file_name) or not isinstance(file_name, str) or len(file_name.strip()) == 0:
+    if isinstance(image_path, str):
+        file_name = os.path.basename(image_path)
+
+if selection_status != "selected":
+    raise ValueError(
+        "The chosen row does not contain a selected pole.\n"
+        f"POLE_ROI_DEBUG_ROW_INDEX={POLE_ROI_DEBUG_ROW_INDEX}\n"
+        f"selection_status={selection_status}\n"
+        "Choose a row from pole_selection_df where selection_status == 'selected'.\n"
+        "Note: pole_selection_df spans all run_images_df rows — check which rows\n"
+        "have selection_status == 'selected' before setting POLE_ROI_DEBUG_ROW_INDEX."
+    )
+
+if not isinstance(image_path, str) or len(image_path.strip()) == 0:
+    raise ValueError(f"Invalid image_path for selected row: {image_path}")
+
+if not os.path.exists(image_path):
+    raise FileNotFoundError(f"Image file not found: {image_path}")
+
+# -----------------------------------------------------------------------------
+# 7. LOAD THE IMAGE AND BUILD THE DEBUG ROI ROW
+# -----------------------------------------------------------------------------
+with Image.open(image_path) as img:
+    image = img.convert("RGB")
+    image.load()
+
+image_w, image_h = image.size
+image_rgb = np.array(image)
+
+pole_x1 = float(selected_row["x1"])
+pole_y1 = float(selected_row["y1"])
+pole_x2 = float(selected_row["x2"])
+pole_y2 = float(selected_row["y2"])
+
+expanded_box = _build_expanded_box_from_pole(
+    pole_x1=pole_x1,
+    pole_y1=pole_y1,
+    pole_x2=pole_x2,
+    pole_y2=pole_y2,
+    image_w=image_w,
+    image_h=image_h,
+    width_factor_from_pole_height=EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT,
+    min_box_width=MIN_EXPANDED_BOX_WIDTH,
+    top_extra_factor_from_pole_height=TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT,
+    bottom_extra_factor_from_pole_height=BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT,
+    min_top_extra_pixels=MIN_TOP_EXTRA_PIXELS,
+    min_bottom_extra_pixels=MIN_BOTTOM_EXTRA_PIXELS,
+)
+
+# -------------------------------------------------------------------------
+# Carry forward selected-pole identity fields from CELL 14C so later ROI /
+# mask-overlap steps can still map this ROI row back to the selected pole.
+# -------------------------------------------------------------------------
+prompt = selected_row.get(
+    "prompt",
+    globals().get("POLE_PROMPT", "timber power pole")
+)
+det_idx = selected_row.get("det_idx", np.nan)
+score = selected_row.get("score", np.nan)
+has_mask = bool(selected_row.get("has_mask", False))
+selection_mode = selected_row.get("selection_mode", None)
+final_score = selected_row.get("final_score", np.nan)
+
+mask_lookup_key = None
+mask_lookup_hit = False
+
+if (
+    "pole_mask_lookup" in globals()
+    and isinstance(globals().get("pole_mask_lookup"), dict)
+    and pd.notna(det_idx)
+):
+    mask_lookup_key = _candidate_key(image_id, prompt, int(det_idx))
+    mask_lookup_hit = mask_lookup_key in pole_mask_lookup
+
+pole_roi_debug_df = pd.DataFrame([
+    {
+        "image_id": image_id,
+        "file_name": file_name,
+        "image_path": image_path,
+        "debug_row_index": int(POLE_ROI_DEBUG_ROW_INDEX),
+
+        # ---------------------------------------------------------------------
+        # Selected-pole carry-forward fields from CELL 14C
+        # ---------------------------------------------------------------------
+        "selection_status": selection_status,
+        "selection_mode": selection_mode,
+        "roi_status": "ok",
+        "prompt": prompt,
+        "det_idx": int(det_idx) if pd.notna(det_idx) else np.nan,
+        "score": score,
+        "final_score": final_score,
+        "has_mask": has_mask,
+        "mask_lookup_hit": bool(mask_lookup_hit),
+
+        # ---------------------------------------------------------------------
+        # Selected pole geometry
+        # ---------------------------------------------------------------------
+        "x1": pole_x1,
+        "y1": pole_y1,
+        "x2": pole_x2,
+        "y2": pole_y2,
+        "pole_w": expanded_box["pole_w"],
+        "pole_h": expanded_box["pole_h"],
+        "pole_cx": expanded_box["pole_cx"],
+        "pole_cy": expanded_box["pole_cy"],
+
+        # ---------------------------------------------------------------------
+        # Full image geometry
+        # ---------------------------------------------------------------------
+        "image_w": int(image_w),
+        "image_h": int(image_h),
+
+        # ---------------------------------------------------------------------
+        # Expanded ROI geometry
+        # ---------------------------------------------------------------------
+        "expanded_x1": expanded_box["expanded_x1"],
+        "expanded_y1": expanded_box["expanded_y1"],
+        "expanded_x2": expanded_box["expanded_x2"],
+        "expanded_y2": expanded_box["expanded_y2"],
+        "expanded_w": expanded_box["expanded_w"],
+        "expanded_h": expanded_box["expanded_h"],
+    }
+])
+
+# -----------------------------------------------------------------------------
+# 8. OUTPUT TABLE
+# -----------------------------------------------------------------------------
+print("\n" + "=" * 100)
+print("ONE-IMAGE POLE ROI DEBUG TABLE")
+print("=" * 100)
+
+_safe_display(
+    pole_roi_debug_df[
+        [
+            "image_id",
+            "file_name",
+            "debug_row_index",
+            "selection_status",
+            "selection_mode",
+            "roi_status",
+            "prompt",
+            "det_idx",
+            "score",
+            "final_score",
+            "has_mask",
+            "mask_lookup_hit",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "pole_cx",
+            "pole_cy",
+            "expanded_x1",
+            "expanded_y1",
+            "expanded_x2",
+            "expanded_y2",
+            "expanded_w",
+            "expanded_h",
+        ]
+    ].reset_index(drop=True)
+)
+
+# -----------------------------------------------------------------------------
+# 9. DRAW THE SINGLE IMAGE — SELECTED POLE + CROP BOX
+# -----------------------------------------------------------------------------
+print("\n" + "=" * 100)
+print("ONE-IMAGE CROP-BOX DEBUG VIEW")
+print("=" * 100)
+
+fig, ax = plt.subplots(1, 1, figsize=(11, 8))
+
+draw_selected_pole_and_crop_box(
+    ax=ax,
+    image_rgb=image_rgb,
+    row=pole_roi_debug_df.iloc[0],
+    title=f"{file_name}\nCELL 15A — DRAW CROP BOX ON ONE IMAGE",
+)
+
+plt.tight_layout()
+plt.show()
+plt.close()
+
+# -----------------------------------------------------------------------------
+# 10. SAVE STATE
+# -----------------------------------------------------------------------------
+if "save_state" in globals():
+    save_state(
+        df_names=[
+            name for name in [
+                "pole_selection_df",
+                "pole_roi_debug_df",
+            ]
+            if isinstance(globals().get(name), pd.DataFrame)
+        ],
+        config_extra={
+            "POLE_ROI_DEBUG_ROW_INDEX": POLE_ROI_DEBUG_ROW_INDEX,
+            "EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT": EXPANDED_BOX_WIDTH_FACTOR_FROM_POLE_HEIGHT,
+            "MIN_EXPANDED_BOX_WIDTH": MIN_EXPANDED_BOX_WIDTH,
+            "TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT": TOP_EXTRA_FACTOR_FROM_POLE_HEIGHT,
+            "BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT": BOTTOM_EXTRA_FACTOR_FROM_POLE_HEIGHT,
+            "MIN_TOP_EXTRA_PIXELS": MIN_TOP_EXTRA_PIXELS,
+            "MIN_BOTTOM_EXTRA_PIXELS": MIN_BOTTOM_EXTRA_PIXELS,
+        },
+        nb_globals=globals(),
+    )
+else:
+    print(
+        "Note: save_state not available in this Databricks notebook; "
+        "outputs remain in globals only."
+    )
+
+print("\nCELL 15A completed.")
+print("Saved outputs:")
+print("  - pole_roi_debug_df")
+
+
+
+
+# =============================================================================
+# CELL 15B — PRODUCTION POLE-TOP FIXED CANVAS ROI + SHIFT + PAD + SAVE TO SILVER
+# =============================================================================
+# EXPLANATION:
+# Build one fixed-size pole-top ROI for every selected pole and save to Silver.
+#
+# STRATEGY:
+# - anchor from the selected pole top
+# - keep the final ROI size fixed for every image
+# - shift the requested box inside the image first when possible
+# - pad only if needed
+#
+# RESULT:
+# - every saved ROI image has exactly the same size
+# - the pole-top hardware zone is framed more consistently
+# - the gallery shows debug-style labels for both the pole box and crop box
+# - draws:
+#        - selected pole box = red solid
+#        - requested ROI box = cyan dashed
+#
+# DATABRICKS DIFFERENCES FROM COLAB CELL 8:
+# - SILVER_POLE_ROIS comes from CELL 10 globals (not a hardcoded path)
+# - save_state is optional — else-branch prints a note
+# - matplotlib.patches is already imported at module level in CELL 3A
+# - all config constants use globals().get() with matching defaults
+#
+# INPUT:
+# - pole_selection_df from CELL 14C
+#
+# OUTPUT:
+# - pole_rois_df : one row per selected pole with full crop geometry + file paths
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 0. SAFETY CHECKS
+# -----------------------------------------------------------------------------
+required_globals = [
+    "pole_selection_df",
+    "SILVER_POLE_ROIS",
+]
+
+missing_globals = [name for name in required_globals if name not in globals()]
+if missing_globals:
+    raise NameError(
+        "CELL 15B cannot run because some required variables are missing.\n"
+        "Please run CELL 14C and CELL 10 first.\n"
+        f"Missing globals: {missing_globals}"
+    )
+
+if not isinstance(pole_selection_df, pd.DataFrame):
+    raise TypeError("pole_selection_df exists but is not a pandas DataFrame.")
+
+if pole_selection_df.empty:
+    raise ValueError("pole_selection_df is empty. Please check CELL 14C.")
+
+# -----------------------------------------------------------------------------
+# 1. KEEP ONLY SELECTED POLES
+# -----------------------------------------------------------------------------
+# Keep only rows where a reliable pole was selected.
+if "selection_status" in pole_selection_df.columns:
+    selected_poles_df = pole_selection_df[
+        pole_selection_df["selection_status"] == "selected"
+    ].copy()
+else:
+    selected_poles_df = pole_selection_df[
+        pole_selection_df[["x1", "y1", "x2", "y2"]].notna().all(axis=1)
+    ].copy()
+
+if selected_poles_df.empty:
+    raise ValueError(
+        "No selected poles were found in pole_selection_df.\n"
+        "Please check CELL 14C production output."
+    )
+
+# -----------------------------------------------------------------------------
+# 2. FIXED POLE-TOP ROI CONFIG
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Use one fixed final canvas size for every image.
+# All constants use globals().get() so they can be overridden before running.
+# -----------------------------------------------------------------------------
+FIXED_ROI_WIDTH = int(globals().get("FIXED_ROI_WIDTH", 2600))
+FIXED_ROI_HEIGHT = int(globals().get("FIXED_ROI_HEIGHT", 3500))
+
+# Start the requested ROI this many pixels above the selected pole top.
+POLE_TOP_BUFFER_ABOVE = int(globals().get("POLE_TOP_BUFFER_ABOVE", 350))
+
+# Use a black background if padding is needed.
+PAD_RGB = globals().get("PAD_RGB", (0, 0, 0))
+
+# Show only a small gallery of selected poles.
+POLE_ROI_GALLERY_COUNT = min(
+    int(globals().get("POLE_ROI_GALLERY_COUNT", 6)),
+    len(selected_poles_df)
+)
+
+print("Fixed pole-top ROI config:")
+print(f"  FIXED_ROI_WIDTH        : {FIXED_ROI_WIDTH}")
+print(f"  FIXED_ROI_HEIGHT       : {FIXED_ROI_HEIGHT}")
+print(f"  POLE_TOP_BUFFER_ABOVE  : {POLE_TOP_BUFFER_ABOVE}")
+print(f"  PAD_RGB                : {PAD_RGB}")
+print(f"  POLE_ROI_GALLERY_COUNT : {POLE_ROI_GALLERY_COUNT}")
+print(f"  selected_poles_df rows : {len(selected_poles_df)}")
+print(f"  SILVER_POLE_ROIS       : {SILVER_POLE_ROIS}")
+
+# -----------------------------------------------------------------------------
+# 3. HELPER: SAFE DISPLAY
+# -----------------------------------------------------------------------------
+def _safe_display(obj):
+    """
+    Display a pandas object in a notebook if possible; otherwise print it.
+
+    Args:
+        obj:
+            Object to display.
+
+    Returns:
+        None
+    """
+    try:
+        display(obj)
+    except Exception:
+        print("WARNING: display() unavailable, falling back to print().")
+        print(obj)
+
+# -----------------------------------------------------------------------------
+# 4. HELPER: SAFE COLUMN SUBSET
+# -----------------------------------------------------------------------------
+def _existing_cols(df, cols):
+    """
+    Return only the requested columns that actually exist in the DataFrame.
+
+    Args:
+        df:
+            Input pandas DataFrame.
+
+        cols:
+            Requested column names.
+
+    Returns:
+        List[str]:
+            Existing column names only.
+    """
+    if df is None or not isinstance(df, pd.DataFrame):
+        return []
+
+    return [c for c in cols if c in df.columns]
+
+# -----------------------------------------------------------------------------
+# 5. HELPER: CANDIDATE KEY
+# -----------------------------------------------------------------------------
+def _candidate_key(image_id, prompt, det_idx):
+    """
+    Build the same mask-lookup key used in CELL 14C / 15A.
+
+    Args:
+        image_id:
+            Stable image identifier.
+
+        prompt:
+            Pole prompt used for the selected detection.
+
+        det_idx:
+            Detection index within that prompt run.
+
+    Returns:
+        tuple:
+            (image_id, prompt, det_idx) as a stable lookup key.
+    """
+    return (str(image_id), str(prompt), int(det_idx))
+
+# -----------------------------------------------------------------------------
+# 6. HELPER: SAFE FILE-STEM
+# -----------------------------------------------------------------------------
+def make_safe_stem(text):
+    """
+    Convert a string into a filesystem-safe stem.
+
+    Args:
+        text:
+            Input string.
+
+    Returns:
+        str:
+            Filesystem-safe stem.
+    """
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        text = "image"
+
+    text = str(text).strip()
+    if len(text) == 0:
+        text = "image"
+
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+
+    return text if len(text) > 0 else "image"
+
+# -----------------------------------------------------------------------------
+# 7. HELPER: SHIFT A FIXED BOX INSIDE THE IMAGE WHEN POSSIBLE
+# -----------------------------------------------------------------------------
+def shift_box_inside_image(x1, y1, box_w, box_h, image_w, image_h):
+    """
+    Shift a fixed-size box inside the image when possible, while keeping the
+    box size unchanged.
+
+    Args:
+        x1, y1:
+            Requested top-left corner.
+
+        box_w, box_h:
+            Fixed box dimensions.
+
+        image_w, image_h:
+            Image dimensions.
+
+    Returns:
+        Dict[str, int]:
+            Shifted fixed-size box coordinates.
+    """
+    x1 = int(round(x1))
+    y1 = int(round(y1))
+    box_w = int(box_w)
+    box_h = int(box_h)
+
+    x2 = x1 + box_w
+    y2 = y1 + box_h
+
+    # Shift horizontally if the full box can fit inside the image.
+    if image_w >= box_w:
+        if x1 < 0:
+            x2 += (-x1)
+            x1 = 0
+        if x2 > image_w:
+            x1 -= (x2 - image_w)
+            x2 = image_w
+
+    # Shift vertically if the full box can fit inside the image.
+    if image_h >= box_h:
+        if y1 < 0:
+            y2 += (-y1)
+            y1 = 0
+        if y2 > image_h:
+            y1 -= (y2 - image_h)
+            y2 = image_h
+
+    # Recompute the far corner from the final fixed-size origin.
+    x2 = x1 + box_w
+    y2 = y1 + box_h
+
+    return {
+        "req_x1": int(x1),
+        "req_y1": int(y1),
+        "req_x2": int(x2),
+        "req_y2": int(y2),
+        "req_w": int(box_w),
+        "req_h": int(box_h),
+    }
+
+# -----------------------------------------------------------------------------
+# 8. HELPER: BUILD THE FIXED POLE-TOP ROI REQUEST
+# -----------------------------------------------------------------------------
+def build_pole_top_roi_request(row):
+    """
+    Build a fixed-size pole-top ROI request from the selected pole row.
+
+    Args:
+        row:
+            Selected pole row from pole_selection_df.
+
+    Returns:
+        Dict[str, Any]:
+            Requested fixed-size ROI geometry after shift-to-fit.
+    """
+    x1 = float(row["x1"])
+    y1 = float(row["y1"])
+    x2 = float(row["x2"])
+    y2 = float(row["y2"])
+
+    image_w = int(row["image_w"])
+    image_h = int(row["image_h"])
+
+    pole_w = max(x2 - x1, 1.0)
+    pole_h = max(y2 - y1, 1.0)
+
+    # Use the provided pole center when available.
+    if "pole_cx" in row.index and pd.notna(row["pole_cx"]):
+        pole_cx = float(row["pole_cx"])
+    else:
+        pole_cx = (x1 + x2) / 2.0
+
+    # Anchor the requested ROI from the pole top.
+    req_x1 = pole_cx - (FIXED_ROI_WIDTH / 2.0)
+    req_y1 = y1 - POLE_TOP_BUFFER_ABOVE
+
+    # Shift the fixed-size ROI inside the image first when possible.
+    shifted = shift_box_inside_image(
+        x1=req_x1,
+        y1=req_y1,
+        box_w=FIXED_ROI_WIDTH,
+        box_h=FIXED_ROI_HEIGHT,
+        image_w=image_w,
+        image_h=image_h,
+    )
+
+    return {
+        "pole_w": float(pole_w),
+        "pole_h": float(pole_h),
+        "pole_cx_used": float(pole_cx),
+        "req_x1": int(shifted["req_x1"]),
+        "req_y1": int(shifted["req_y1"]),
+        "req_x2": int(shifted["req_x2"]),
+        "req_y2": int(shifted["req_y2"]),
+        "req_w": int(shifted["req_w"]),
+        "req_h": int(shifted["req_h"]),
+    }
+
+# -----------------------------------------------------------------------------
+# 9. HELPER: RENDER A FIXED-SIZE CANVAS FROM THE REQUESTED ROI
+# -----------------------------------------------------------------------------
+def render_fixed_canvas_roi(image_pil, roi_request):
+    """
+    Render the final fixed-size ROI canvas by cropping the overlapping source
+    region and pasting it onto a fixed-size canvas.
+
+    Args:
+        image_pil:
+            Source PIL RGB image.
+
+        roi_request:
+            Dict from build_pole_top_roi_request.
+
+    Returns:
+        Dict[str, Any]:
+            Final crop details and the fixed-size PIL canvas.
+    """
+    image_w, image_h = image_pil.size
+
+    req_x1 = int(roi_request["req_x1"])
+    req_y1 = int(roi_request["req_y1"])
+    req_x2 = int(roi_request["req_x2"])
+    req_y2 = int(roi_request["req_y2"])
+
+    # Compute the overlapping source region.
+    src_x1 = max(0, req_x1)
+    src_y1 = max(0, req_y1)
+    src_x2 = min(image_w, req_x2)
+    src_y2 = min(image_h, req_y2)
+
+    overlap_w = max(0, src_x2 - src_x1)
+    overlap_h = max(0, src_y2 - src_y1)
+
+    # Compute where the source crop should be pasted on the fixed canvas.
+    dst_x1 = max(0, src_x1 - req_x1)
+    dst_y1 = max(0, src_y1 - req_y1)
+
+    # Create the fixed-size final canvas.
+    roi_canvas = Image.new("RGB", (FIXED_ROI_WIDTH, FIXED_ROI_HEIGHT), PAD_RGB)
+
+    # Paste the overlapping image crop onto the fixed-size canvas.
+    if overlap_w > 0 and overlap_h > 0:
+        src_crop = image_pil.crop((src_x1, src_y1, src_x2, src_y2))
+        roi_canvas.paste(src_crop, (dst_x1, dst_y1))
+
+    # Compute padding sizes on each side.
+    pad_left   = int(max(0, -req_x1))
+    pad_top    = int(max(0, -req_y1))
+    pad_right  = int(max(0, req_x2 - image_w))
+    pad_bottom = int(max(0, req_y2 - image_h))
+
+    return {
+        "roi_canvas": roi_canvas,
+        "src_x1":     int(src_x1),
+        "src_y1":     int(src_y1),
+        "src_x2":     int(src_x2),
+        "src_y2":     int(src_y2),
+        "src_w":      int(overlap_w),
+        "src_h":      int(overlap_h),
+        "dst_x1":     int(dst_x1),
+        "dst_y1":     int(dst_y1),
+        "pad_left":   int(pad_left),
+        "pad_top":    int(pad_top),
+        "pad_right":  int(pad_right),
+        "pad_bottom": int(pad_bottom),
+        "was_padded": bool(
+            (pad_left > 0) or (pad_top > 0) or
+            (pad_right > 0) or (pad_bottom > 0)
+        ),
+    }
+
+# -----------------------------------------------------------------------------
+# 10. HELPER: BUILD DEBUG-STYLE LABELS
+# -----------------------------------------------------------------------------
+def build_pole_overlay_label(row):
+    """
+    Build the red pole-box label shown on the source-image gallery.
+
+    Args:
+        row:
+            Row from pole_rois_df.
+
+    Returns:
+        str:
+            Label string.
+    """
+    label_bits = ["POLE"]
+
+    prompt_text = None
+    if "prompt" in row.index and pd.notna(row["prompt"]) and str(row["prompt"]).strip():
+        prompt_text = str(row["prompt"]).strip()
+    elif "POLE_PROMPT" in globals():
+        prompt_text = str(POLE_PROMPT).strip()
+
+    if prompt_text:
+        label_bits.append(prompt_text)
+
+    if "score" in row.index and pd.notna(row["score"]):
+        label_bits.append(f"score={float(row['score']):.3f}")
+
+    if "final_score" in row.index and pd.notna(row["final_score"]):
+        label_bits.append(f"final={float(row['final_score']):.3f}")
+
+    return " | ".join(label_bits)
+
+
+def build_crop_overlay_label(row):
+    """
+    Build the cyan crop-box label shown on the source-image gallery.
+
+    Args:
+        row:
+            Row from pole_rois_df.
+
+    Returns:
+        str:
+            Label string.
+    """
+    label_bits = ["CROP BOX"]
+
+    if "req_w" in row.index and "req_h" in row.index:
+        if pd.notna(row["req_w"]) and pd.notna(row["req_h"]):
+            label_bits.append(f"{int(row['req_w'])}x{int(row['req_h'])}")
+
+    if "was_padded" in row.index and bool(row["was_padded"]):
+        label_bits.append("padded")
+
+    return " | ".join(label_bits)
+
+# -----------------------------------------------------------------------------
+# 11. HELPER: DRAW SOURCE IMAGE WITH POLE + ROI BOXES
+# -----------------------------------------------------------------------------
+def draw_source_and_roi_gallery(pole_rois_df, gallery_count=6):
+    """
+    Show a small gallery with the selected pole box and the requested ROI box.
+    Left panel: source image with red pole box and cyan crop box overlaid.
+    Right panel: saved fixed-size ROI crop.
+
+    Args:
+        pole_rois_df:
+            ROI manifest DataFrame.
+
+        gallery_count:
+            Maximum number of rows to display.
+
+    Returns:
+        None
+    """
+    gallery_df = pole_rois_df.head(gallery_count).copy()
+
+    if gallery_df.empty:
+        print("No ROI gallery rows to display.")
+        return
+
+    fig, axes = plt.subplots(len(gallery_df), 2, figsize=(16, 6 * len(gallery_df)))
+
+    # Normalise axes shape for the single-row case.
+    if len(gallery_df) == 1:
+        axes = np.array([axes])
+
+    for row_idx, (_, r) in enumerate(gallery_df.iterrows()):
+        ax_left  = axes[row_idx, 0]
+        ax_right = axes[row_idx, 1]
+
+        # Reload the source image for display only.
+        with Image.open(r["image_path"]) as img:
+            img = img.convert("RGB")
+            orig_w, orig_h = img.size
+            img.thumbnail((1600, 1600))
+            disp_w, disp_h = img.size
+            scale_x = disp_w / orig_w if orig_w > 0 else 1.0
+            scale_y = disp_h / orig_h if orig_h > 0 else 1.0
+            image_rgb = np.array(img)
+
+        ax_left.imshow(image_rgb)
+        ax_left.set_title(
+            f"{r['file_name']}\nselected pole + requested ROI", fontsize=11
+        )
+        ax_left.axis("off")
+
+        # Red selected pole box (scaled to display size).
+        pole_x1 = float(r["x1"]) * scale_x
+        pole_y1 = float(r["y1"]) * scale_y
+        pole_w  = (float(r["x2"]) - float(r["x1"])) * scale_x
+        pole_h  = (float(r["y2"]) - float(r["y1"])) * scale_y
+
+        pole_rect = patches.Rectangle(
+            (pole_x1, pole_y1),
+            pole_w,
+            pole_h,
+            linewidth=3.0,
+            edgecolor="red",
+            facecolor="none",
+        )
+        ax_left.add_patch(pole_rect)
+
+        pole_label = build_pole_overlay_label(r)
+        ax_left.text(
+            max(pole_x1, 8),
+            max(pole_y1 - 6, 8),
+            pole_label,
+            fontsize=8.5,
+            color="white",
+            bbox=dict(facecolor="red", alpha=0.85, edgecolor="none", pad=2.0),
+        )
+
+        # Cyan dashed requested ROI box (scaled to display size).
+        crop_x1 = float(r["req_x1"]) * scale_x
+        crop_y1 = float(r["req_y1"]) * scale_y
+        crop_w  = (float(r["req_x2"]) - float(r["req_x1"])) * scale_x
+        crop_h  = (float(r["req_y2"]) - float(r["req_y1"])) * scale_y
+
+        roi_rect = patches.Rectangle(
+            (crop_x1, crop_y1),
+            crop_w,
+            crop_h,
+            linewidth=2.5,
+            edgecolor="cyan",
+            facecolor="none",
+            linestyle="--",
+        )
+        ax_left.add_patch(roi_rect)
+
+        crop_label = build_crop_overlay_label(r)
+        ax_left.text(
+            max(crop_x1, 8),
+            max(crop_y1 - 6, 8),
+            crop_label,
+            fontsize=8.5,
+            color="black",
+            bbox=dict(facecolor="cyan", alpha=0.85, edgecolor="none", pad=2.0),
+        )
+
+        # Right panel: saved fixed-size ROI.
+        with Image.open(r["roi_image_path"]) as crop_img:
+            crop_img = crop_img.convert("RGB")
+            crop_rgb = np.array(crop_img)
+
+        crop_title = (
+            f"{r['roi_file_name']}\n"
+            f"ROI size={int(r['roi_w'])}x{int(r['roi_h'])}"
+        )
+        if "was_padded" in r and bool(r["was_padded"]):
+            crop_title += " | padded"
+
+        ax_right.imshow(crop_rgb)
+        ax_right.set_title(crop_title, fontsize=11)
+        ax_right.axis("off")
+
+    plt.tight_layout()
+    plt.show()
+    plt.close()
+
+# -----------------------------------------------------------------------------
+# 12. RESET THE SILVER ROI FOLDER
+# -----------------------------------------------------------------------------
+# Clear the old ROI folder so there are no stale crops from a previous run.
+if os.path.isdir(SILVER_POLE_ROIS):
+    shutil.rmtree(SILVER_POLE_ROIS)
+
+os.makedirs(SILVER_POLE_ROIS, exist_ok=True)
+
+# -----------------------------------------------------------------------------
+# 13. BUILD FIXED-SIZE ROI CANVASES AND SAVE TO SILVER
+# -----------------------------------------------------------------------------
+roi_rows = []
+
+print(f"\nCreating fixed pole-top ROI crops for {len(selected_poles_df)} selected image(s)...")
+
+for idx, row in selected_poles_df.iterrows():
+    image_id   = row["image_id"]   if "image_id"   in row.index and pd.notna(row["image_id"])   else None
+    file_name  = row["file_name"]  if "file_name"  in row.index and pd.notna(row["file_name"])  else None
+    image_path = row["image_path"] if "image_path" in row.index and pd.notna(row["image_path"]) else None
+
+    if pd.isna(image_path) or not isinstance(image_path, str) or len(image_path.strip()) == 0:
+        raise ValueError("A selected pole row is missing a valid image_path.")
+
+    if (
+        pd.isna(file_name)
+        or not isinstance(file_name, str)
+        or len(file_name.strip()) == 0
+    ):
+        file_name = os.path.basename(image_path)
+
+    # -------------------------------------------------------------------------
+    # Carry forward selected-pole identity fields from CELL 14C.
+    # These keep pole_rois_df linked back to the selected pole and its mask.
+    # -------------------------------------------------------------------------
+    prompt = row["prompt"] if "prompt" in row.index and pd.notna(row["prompt"]) else None
+    det_idx = int(row["det_idx"]) if "det_idx" in row.index and pd.notna(row["det_idx"]) else np.nan
+    selection_mode = row["selection_mode"] if "selection_mode" in row.index and pd.notna(row["selection_mode"]) else None
+    has_mask = bool(row["has_mask"]) if "has_mask" in row.index and pd.notna(row["has_mask"]) else False
+    final_score = float(row["final_score"]) if "final_score" in row.index and pd.notna(row["final_score"]) else np.nan
+
+    mask_lookup_hit = False
+    if (
+        "pole_mask_lookup" in globals()
+        and isinstance(globals().get("pole_mask_lookup"), dict)
+        and prompt is not None
+        and pd.notna(det_idx)
+    ):
+        mask_lookup_hit = _candidate_key(image_id, prompt, int(det_idx)) in pole_mask_lookup
+
+    # Build the fixed pole-top ROI request.
+    roi_request = build_pole_top_roi_request(row)
+
+    # Build a stable saved crop filename.
+    roi_stem       = make_safe_stem(image_id if image_id is not None else os.path.splitext(file_name)[0])
+    roi_file_name  = f"{roi_stem}__pole_roi.png"
+    roi_image_path = os.path.join(SILVER_POLE_ROIS, roi_file_name)
+
+    # Open the source image and render the fixed-size ROI canvas.
+    with Image.open(image_path) as img:
+        img = img.convert("RGB")
+
+        roi_render = render_fixed_canvas_roi(
+            image_pil=img,
+            roi_request=roi_request,
+        )
+
+        # Save the fixed-size ROI canvas to Silver.
+        roi_render["roi_canvas"].save(roi_image_path, format="PNG")
+
+    roi_rows.append({
+        "image_id":         image_id,
+        "file_name":        file_name,
+        "image_path":       image_path,
+
+        # ---------------------------------------------------------------------
+        # Carry-forward selected-pole identity fields
+        # ---------------------------------------------------------------------
+        "selection_status": "selected",
+        "selection_mode":   selection_mode,
+        "prompt":           prompt,
+        "det_idx":          det_idx,
+        "score":            float(row["score"]) if "score" in row.index and pd.notna(row["score"]) else np.nan,
+        "final_score":      final_score,
+        "has_mask":         has_mask,
+        "mask_lookup_hit":  bool(mask_lookup_hit),
+
+        # ---------------------------------------------------------------------
+        # Full image geometry
+        # ---------------------------------------------------------------------
+        "image_w":          int(row["image_w"]),
+        "image_h":          int(row["image_h"]),
+
+        # ---------------------------------------------------------------------
+        # Selected pole geometry
+        # ---------------------------------------------------------------------
+        "x1":               float(row["x1"]),
+        "y1":               float(row["y1"]),
+        "x2":               float(row["x2"]),
+        "y2":               float(row["y2"]),
+        "pole_cx":          float(row["pole_cx"]) if "pole_cx" in row.index and pd.notna(row["pole_cx"]) else np.nan,
+        "pole_cy":          float(row["pole_cy"]) if "pole_cy" in row.index and pd.notna(row["pole_cy"]) else np.nan,
+        "pole_w":           float(roi_request["pole_w"]),
+        "pole_h":           float(roi_request["pole_h"]),
+        "pole_cx_used":     float(roi_request["pole_cx_used"]),
+
+        # ---------------------------------------------------------------------
+        # Requested fixed ROI geometry
+        # ---------------------------------------------------------------------
+        "req_x1":           int(roi_request["req_x1"]),
+        "req_y1":           int(roi_request["req_y1"]),
+        "req_x2":           int(roi_request["req_x2"]),
+        "req_y2":           int(roi_request["req_y2"]),
+        "req_w":            int(roi_request["req_w"]),
+        "req_h":            int(roi_request["req_h"]),
+
+        # ---------------------------------------------------------------------
+        # Actual source overlap / paste geometry
+        # ---------------------------------------------------------------------
+        "src_x1":           int(roi_render["src_x1"]),
+        "src_y1":           int(roi_render["src_y1"]),
+        "src_x2":           int(roi_render["src_x2"]),
+        "src_y2":           int(roi_render["src_y2"]),
+        "src_w":            int(roi_render["src_w"]),
+        "src_h":            int(roi_render["src_h"]),
+        "dst_x1":           int(roi_render["dst_x1"]),
+        "dst_y1":           int(roi_render["dst_y1"]),
+        "pad_left":         int(roi_render["pad_left"]),
+        "pad_top":          int(roi_render["pad_top"]),
+        "pad_right":        int(roi_render["pad_right"]),
+        "pad_bottom":       int(roi_render["pad_bottom"]),
+        "was_padded":       bool(roi_render["was_padded"]),
+
+        # ---------------------------------------------------------------------
+        # Saved fixed canvas ROI output
+        # ---------------------------------------------------------------------
+        "roi_w":            int(FIXED_ROI_WIDTH),
+        "roi_h":            int(FIXED_ROI_HEIGHT),
+        "roi_file_name":    roi_file_name,
+        "roi_image_path":   roi_image_path,
+        "source_layer":     "silver",
+        "source_folder":    SILVER_POLE_ROIS,
+    })
+
+    if (len(roi_rows) % 20 == 0) or (len(roi_rows) == 1) or (len(roi_rows) == len(selected_poles_df)):
+        print(f"  [{len(roi_rows)}/{len(selected_poles_df)}] {roi_file_name}")
+
+    del roi_render
+
+gc.collect()
+
+# -----------------------------------------------------------------------------
+# 14. BUILD THE ROI MANIFEST
+# -----------------------------------------------------------------------------
+pole_rois_df = pd.DataFrame(roi_rows)
+
+if pole_rois_df.empty:
+    raise ValueError("pole_rois_df ended up empty. Please check the crop/save loop.")
+
+# -----------------------------------------------------------------------------
+# 15. PRINT SUMMARY
+# -----------------------------------------------------------------------------
+print("\n" + "=" * 100)
+print("FIXED POLE-TOP ROI SUMMARY")
+print("=" * 100)
+print(f"Selected poles used      : {len(selected_poles_df)}")
+print(f"Saved ROI crops          : {len(pole_rois_df)}")
+print(f"Silver ROI folder        : {SILVER_POLE_ROIS}")
+print(f"Fixed ROI size           : {FIXED_ROI_WIDTH}x{FIXED_ROI_HEIGHT}")
+print(
+    f"Padded ROI count         : "
+    f"{int(pole_rois_df['was_padded'].sum()) if 'was_padded' in pole_rois_df.columns else 0}"
+)
+
+# -----------------------------------------------------------------------------
+# 16. DISPLAY THE ROI TABLE
+# -----------------------------------------------------------------------------
+roi_cols = _existing_cols(
+    pole_rois_df,
+    [
+        "image_id",
+        "file_name",
+        "prompt",
+        "det_idx",
+        "score",
+        "final_score",
+        "has_mask",
+        "mask_lookup_hit",
+        "selection_mode",
+        "pole_w",
+        "pole_h",
+        "req_x1",
+        "req_y1",
+        "req_x2",
+        "req_y2",
+        "roi_w",
+        "roi_h",
+        "pad_left",
+        "pad_top",
+        "pad_right",
+        "pad_bottom",
+        "was_padded",
+        "roi_file_name",
+        "roi_image_path",
+    ]
+)
+
+_safe_display(
+    pole_rois_df[roi_cols]
+    .sort_values(["file_name"], ascending=[True])
+    .reset_index(drop=True)
+)
+
+# -----------------------------------------------------------------------------
+# 17. SHOW A SMALL ROI GALLERY
+# -----------------------------------------------------------------------------
+print("\n" + "=" * 100)
+print("FIXED POLE-TOP ROI GALLERY")
+print("=" * 100)
+
+draw_source_and_roi_gallery(
+    pole_rois_df=pole_rois_df,
+    gallery_count=POLE_ROI_GALLERY_COUNT,
+)
+
+# -----------------------------------------------------------------------------
+# 18. SAVE OUTPUTS
+# -----------------------------------------------------------------------------
+if "save_state" in globals():
+    save_state(
+        df_names=[
+            name for name in [
+                "pole_selection_df",
+                "pole_rois_df",
+            ]
+            if isinstance(globals().get(name), pd.DataFrame)
+        ],
+        config_extra={
+            "FIXED_ROI_WIDTH":        FIXED_ROI_WIDTH,
+            "FIXED_ROI_HEIGHT":       FIXED_ROI_HEIGHT,
+            "POLE_TOP_BUFFER_ABOVE":  POLE_TOP_BUFFER_ABOVE,
+            "PAD_RGB":                list(PAD_RGB),
+            "POLE_ROI_GALLERY_COUNT": POLE_ROI_GALLERY_COUNT,
+        },
+        nb_globals=globals(),
+    )
+else:
+    print(
+        "Note: save_state not available in this Databricks notebook; "
+        "outputs remain in globals only."
+    )
+
+print("\nCELL 15B completed.")
+print("Saved outputs:")
+print("  - pole_rois_df")
+
+
+
+
 # =============================================================================
 # CELL 16A — CROSSARM DETECTION ON ONE POLE ROI CROP (DEBUG)
 #             + CONTAINMENT SUPPRESSION
@@ -8,59 +1454,8 @@
 #             + OPTIONAL PCA CHECK ON SUSPICIOUS REMAINING BOXES
 #             + COLOURED CROSSARM MASKS + YELLOW BOXES
 #             + POLE MASK RED OVERLAY ON FINAL DISPLAY
+#             + SAVED STAGE SNAPSHOTS + FINAL 2×4 DEBUG GRID
 #             + Xarm_1 / Xarm_2 / ... LABELS
-# =============================================================================
-# EXPLANATION:
-# Runs SAM3 crossarm detection on exactly ONE saved pole ROI crop from CELL 15B.
-#
-# IMPORTANT CHANGE VS PREVIOUS 16A:
-# Crossarm mask handling now follows the same style as your pole code:
-#   - raw_masks are normalized per detection into a list of 2D boolean masks
-#   - masks are stored in a lookup dictionary keyed by orig_det_idx
-#   - coloured crossarm masks are drawn from that lookup
-#
-# This avoids the previous "HAS_VALID_MASKS" failure mode where masks disappeared
-# because state["masks"] was not returned as a clean (N,H,W) array.
-#
-# WHAT THIS CELL DOES:
-#   1) reads pole_rois_df from CELL 15B
-#   2) builds a safe ROI subset
-#   3) selects one row using CROSSARM_ROI_DEBUG_ROW_INDEX
-#   4) loads the saved ROI crop (roi_image_path)
-#   5) projects the saved pole mask into ROI crop coordinate space
-#   6) runs SAM3 with the single prompt: "utility pole crossarm"
-#   7) normalizes crossarm masks per detection and stores them in a lookup
-#   8) applies containment suppression
-#   9) applies main-cluster false-positive filtering
-#   10) applies pole mask overlap filter
-#   11) applies crossarm structure filter:
-#         - minimum aspect ratio
-#         - pole-centered attachment corridor
-#         - minimum relative width to widest candidate
-#   12) applies crossarm level dedupe filter:
-#         - group by vertical level using cy
-#         - reject boxes that are too tall
-#         - keep only the best detection per level
-#   13) optionally applies PCA only to suspicious remaining boxes:
-#         - check whether mask pixels are strongly aligned in one direction
-#         - skip gracefully if masks are unavailable or too small
-#   14) assigns Xarm_1 / Xarm_2 / ... labels
-#   15) visualizes:
-#         - coloured per-crossarm masks (tab10 palette)
-#         - red pole mask overlay
-#         - yellow boxes + blue Xarm labels
-#
-# INPUT:
-# - pole_rois_df from CELL 15B
-# - pole_mask_lookup from CELL 14C (optional but recommended)
-#
-# OUTPUT:
-# - crossarm_roi_debug_results_df
-# - helper functions exposed as globals for CELL 16B:
-#     normalize_masks, normalize_boxes, normalize_scores,
-#     suppress_contained_shorter_detections, keep_main_detection_cluster,
-#     project_pole_mask_to_roi, compute_box_overlap_with_mask,
-#     crop_mask_to_box, compute_binary_mask_pca_stats
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -94,7 +1489,6 @@ if "roi_image_path" not in pole_rois_df.columns:
         "Please check CELL 15B."
     )
 
-# Optional, not a hard requirement
 POLE_MASK_LOOKUP_AVAILABLE = (
     "pole_mask_lookup" in globals()
     and isinstance(globals().get("pole_mask_lookup"), dict)
@@ -133,13 +1527,13 @@ if roi_input_df.empty:
 # -----------------------------------------------------------------------------
 # 2. CONFIG
 # -----------------------------------------------------------------------------
-CROSSARM_ROI_DEBUG_ROW_INDEX = int(
-    globals().get("CROSSARM_ROI_DEBUG_ROW_INDEX", 0)
-)
+#CROSSARM_ROI_DEBUG_ROW_INDEX = int(globals().get("CROSSARM_ROI_DEBUG_ROW_INDEX", 0))
+
+CROSSARM_ROI_DEBUG_ROW_INDEX = 0
 
 PROMPT_TEXT = "utility pole crossarm"
 
-# Keep threshold at 0.3 throughout
+# keep threshold at 0.3 throughout
 TEXT_THRESHOLD = 0.30
 RUN_DEVICE = DEVICE
 
@@ -157,46 +1551,26 @@ CENTER_DIST_FACTOR = 2.75
 
 # Pole mask overlap filter settings
 POLE_MASK_FILTER_ENABLED = True
-POLE_OVERLAP_MIN_FRACTION = 0.05
+POLE_OVERLAP_MIN_FRACTION = 0.02
 
 # Fuse-arm / small-arm suppression settings
 CROSSARM_STRUCTURE_FILTER_ENABLED = True
-
-# Real crossarms are usually clearly horizontal
-CROSSARM_MIN_ASPECT_RATIO = 1.50
-
-# Expand the pole x-span by this many pixels on each side to define
-# the "attachment corridor" that a true crossarm should pass through
+CROSSARM_MIN_ASPECT_RATIO = 1.0
 POLE_ATTACH_MARGIN_PX = 120
-
-# Keep only detections whose width is at least this fraction of the
-# widest remaining detection after pole-mask filtering
-MIN_RELATIVE_WIDTH_TO_MAX = 0.55
+MIN_RELATIVE_WIDTH_TO_MAX = 0.35
 
 # Crossarm level dedupe filter settings
 CROSSARM_LEVEL_FILTER_ENABLED = True
-
-# Group boxes into the same crossarm level if their center-y values are close
 CROSSARM_LEVEL_BAND_FACTOR = 0.60
-
-# Reject very tall boxes that likely span multiple levels
 MAX_BOX_H_TO_MEDIAN_RATIO = 1.80
-
-# Keep only the top-ranked detection per vertical level
-KEEP_PER_LEVEL = 1
+KEEP_PER_LEVEL = 3
 
 # Optional PCA filter settings
 CROSSARM_PCA_FILTER_ENABLED = True
-
-# Only run PCA on boxes that still look suspicious after level dedupe
 PCA_SUSPICIOUS_ASPECT_MAX = 2.20
 PCA_SUSPICIOUS_HEIGHT_TO_MEDIAN_MIN = 1.15
 PCA_SUSPICIOUS_REL_WIDTH_MAX = 0.85
-
-# Minimum amount of mask support required before trusting PCA
 PCA_MIN_MASK_PIXELS = 80
-
-# Keep only if the mask is strongly one-directional
 PCA_MIN_PC1_RATIO = 0.85
 PCA_MIN_ANISOTROPY = 4.00
 
@@ -205,34 +1579,39 @@ CROSSARM_MASK_ALPHA = 0.40
 POLE_MASK_ALPHA = 0.30
 LABEL_BG = "#1E90FF"
 
+# Stage-grid settings
+SHOW_STAGE_GRID = True
+GRID_FIGSIZE = (20, 10)
+
 print("Single-prompt SAM3 crossarm debug run on pole ROI crop:\n")
-print(f"  CROSSARM_ROI_DEBUG_ROW_INDEX      : {CROSSARM_ROI_DEBUG_ROW_INDEX}")
-print(f"  roi_input_df rows                 : {len(roi_input_df)}")
-print(f"  prompt                            : {PROMPT_TEXT}")
-print(f"  TEXT_THRESHOLD                    : {TEXT_THRESHOLD}")
-print(f"  RUN_DEVICE                        : {RUN_DEVICE}")
-print(f"  CONTAINMENT_THRESHOLD             : {CONTAINMENT_THRESHOLD}")
-print(f"  MIN_AREA_RATIO                    : {MIN_AREA_RATIO}")
-print(f"  MIN_SCORE_ADVANTAGE               : {MIN_SCORE_ADVANTAGE}")
-print(f"  CENTER_DIST_FACTOR                : {CENTER_DIST_FACTOR}")
-print(f"  POLE_MASK_FILTER_ENABLED          : {POLE_MASK_FILTER_ENABLED}")
-print(f"  POLE_OVERLAP_MIN_FRACTION         : {POLE_OVERLAP_MIN_FRACTION}")
-print(f"  CROSSARM_STRUCTURE_FILTER_ENABLED : {CROSSARM_STRUCTURE_FILTER_ENABLED}")
-print(f"  CROSSARM_MIN_ASPECT_RATIO         : {CROSSARM_MIN_ASPECT_RATIO}")
-print(f"  POLE_ATTACH_MARGIN_PX             : {POLE_ATTACH_MARGIN_PX}")
-print(f"  MIN_RELATIVE_WIDTH_TO_MAX         : {MIN_RELATIVE_WIDTH_TO_MAX}")
-print(f"  CROSSARM_LEVEL_FILTER_ENABLED     : {CROSSARM_LEVEL_FILTER_ENABLED}")
-print(f"  CROSSARM_LEVEL_BAND_FACTOR        : {CROSSARM_LEVEL_BAND_FACTOR}")
-print(f"  MAX_BOX_H_TO_MEDIAN_RATIO         : {MAX_BOX_H_TO_MEDIAN_RATIO}")
-print(f"  KEEP_PER_LEVEL                    : {KEEP_PER_LEVEL}")
-print(f"  CROSSARM_PCA_FILTER_ENABLED       : {CROSSARM_PCA_FILTER_ENABLED}")
-print(f"  PCA_SUSPICIOUS_ASPECT_MAX         : {PCA_SUSPICIOUS_ASPECT_MAX}")
+print(f"  CROSSARM_ROI_DEBUG_ROW_INDEX        : {CROSSARM_ROI_DEBUG_ROW_INDEX}")
+print(f"  roi_input_df rows                   : {len(roi_input_df)}")
+print(f"  prompt                              : {PROMPT_TEXT}")
+print(f"  TEXT_THRESHOLD                      : {TEXT_THRESHOLD}")
+print(f"  RUN_DEVICE                          : {RUN_DEVICE}")
+print(f"  CONTAINMENT_THRESHOLD               : {CONTAINMENT_THRESHOLD}")
+print(f"  MIN_AREA_RATIO                      : {MIN_AREA_RATIO}")
+print(f"  MIN_SCORE_ADVANTAGE                 : {MIN_SCORE_ADVANTAGE}")
+print(f"  CENTER_DIST_FACTOR                  : {CENTER_DIST_FACTOR}")
+print(f"  POLE_MASK_FILTER_ENABLED            : {POLE_MASK_FILTER_ENABLED}")
+print(f"  POLE_OVERLAP_MIN_FRACTION           : {POLE_OVERLAP_MIN_FRACTION}")
+print(f"  CROSSARM_STRUCTURE_FILTER_ENABLED   : {CROSSARM_STRUCTURE_FILTER_ENABLED}")
+print(f"  CROSSARM_MIN_ASPECT_RATIO           : {CROSSARM_MIN_ASPECT_RATIO}")
+print(f"  POLE_ATTACH_MARGIN_PX               : {POLE_ATTACH_MARGIN_PX}")
+print(f"  MIN_RELATIVE_WIDTH_TO_MAX           : {MIN_RELATIVE_WIDTH_TO_MAX}")
+print(f"  CROSSARM_LEVEL_FILTER_ENABLED       : {CROSSARM_LEVEL_FILTER_ENABLED}")
+print(f"  CROSSARM_LEVEL_BAND_FACTOR          : {CROSSARM_LEVEL_BAND_FACTOR}")
+print(f"  MAX_BOX_H_TO_MEDIAN_RATIO           : {MAX_BOX_H_TO_MEDIAN_RATIO}")
+print(f"  KEEP_PER_LEVEL                      : {KEEP_PER_LEVEL}")
+print(f"  CROSSARM_PCA_FILTER_ENABLED         : {CROSSARM_PCA_FILTER_ENABLED}")
+print(f"  PCA_SUSPICIOUS_ASPECT_MAX           : {PCA_SUSPICIOUS_ASPECT_MAX}")
 print(f"  PCA_SUSPICIOUS_HEIGHT_TO_MEDIAN_MIN : {PCA_SUSPICIOUS_HEIGHT_TO_MEDIAN_MIN}")
-print(f"  PCA_SUSPICIOUS_REL_WIDTH_MAX      : {PCA_SUSPICIOUS_REL_WIDTH_MAX}")
-print(f"  PCA_MIN_MASK_PIXELS               : {PCA_MIN_MASK_PIXELS}")
-print(f"  PCA_MIN_PC1_RATIO                 : {PCA_MIN_PC1_RATIO}")
-print(f"  PCA_MIN_ANISOTROPY                : {PCA_MIN_ANISOTROPY}")
-print(f"  POLE_MASK_LOOKUP_AVAILABLE        : {POLE_MASK_LOOKUP_AVAILABLE}")
+print(f"  PCA_SUSPICIOUS_REL_WIDTH_MAX        : {PCA_SUSPICIOUS_REL_WIDTH_MAX}")
+print(f"  PCA_MIN_MASK_PIXELS                 : {PCA_MIN_MASK_PIXELS}")
+print(f"  PCA_MIN_PC1_RATIO                   : {PCA_MIN_PC1_RATIO}")
+print(f"  PCA_MIN_ANISOTROPY                  : {PCA_MIN_ANISOTROPY}")
+print(f"  POLE_MASK_LOOKUP_AVAILABLE          : {POLE_MASK_LOOKUP_AVAILABLE}")
+print(f"  SHOW_STAGE_GRID                     : {SHOW_STAGE_GRID}")
 
 # -----------------------------------------------------------------------------
 # 3. HELPER: SAFE DISPLAY
@@ -290,7 +1669,6 @@ roi_file_name = (
     else display_title
 )
 
-# Pole-linkage fields carried forward from CELL 14C via 15B
 pole_prompt = row.get("prompt", None)
 if pd.isna(pole_prompt):
     pole_prompt = None
@@ -300,7 +1678,6 @@ pole_det_idx = int(_pole_det_idx_raw) if (
     _pole_det_idx_raw is not None and pd.notna(_pole_det_idx_raw)
 ) else None
 
-# ROI geometry from 15B required for projecting pole mask into ROI space
 _src_x1 = row.get("src_x1", None)
 _src_y1 = row.get("src_y1", None)
 _src_x2 = row.get("src_x2", None)
@@ -885,7 +2262,113 @@ def compute_binary_mask_pca_stats(mask_bool):
     return out
 
 # -----------------------------------------------------------------------------
-# 11. PROJECT POLE MASK INTO ROI SPACE (IF AVAILABLE)
+# 11. HELPER: DRAW ONE STAGE TO AN AXIS
+# -----------------------------------------------------------------------------
+def draw_pole_label(ax, pole_mask):
+    if pole_mask is None or not np.any(pole_mask):
+        return
+    pole_ys, pole_xs = np.where(pole_mask)
+    if len(pole_xs) > 0 and len(pole_ys) > 0:
+        pole_label_x = float(pole_xs.min())
+        pole_label_y = float(max(8, pole_ys.min() - 6))
+        ax.text(
+            pole_label_x,
+            pole_label_y,
+            "POLE",
+            color="white",
+            fontsize=8,
+            bbox=dict(facecolor="red", alpha=0.90, pad=0.3, edgecolor="none"),
+        )
+
+
+def plot_stage_on_ax(
+    ax,
+    image,
+    detections_df,
+    title,
+    projected_pole_mask=None,
+    crossarm_mask_lookup=None,
+    crossarm_mask_alpha=0.40,
+    pole_mask_alpha=0.30,
+    label_bg="#1E90FF",
+    final_style=False,
+):
+    ax.imshow(image)
+
+    # First: coloured crossarm masks
+    if detections_df is not None and len(detections_df) > 0:
+        try:
+            cmap = plt.colormaps.get_cmap("tab10").resampled(max(len(detections_df), 1))
+        except Exception:
+            cmap = plt.cm.get_cmap("tab10", max(len(detections_df), 1))
+
+        for plot_idx, (_, det_row) in enumerate(detections_df.iterrows()):
+            orig_idx = int(det_row["orig_det_idx"])
+            mask_i = crossarm_mask_lookup.get(orig_idx, None) if crossarm_mask_lookup is not None else None
+
+            if isinstance(mask_i, np.ndarray) and mask_i.ndim == 2 and mask_i.sum() > 0:
+                color_rgba = cmap(plot_idx)
+
+                overlay = np.zeros((mask_i.shape[0], mask_i.shape[1], 4), dtype=np.float32)
+                overlay[..., 0] = color_rgba[0]
+                overlay[..., 1] = color_rgba[1]
+                overlay[..., 2] = color_rgba[2]
+                overlay[..., 3] = mask_i.astype(np.float32) * crossarm_mask_alpha
+                ax.imshow(overlay)
+
+    # Second: red pole mask overlay
+    if projected_pole_mask is not None and np.any(projected_pole_mask):
+        pole_overlay = np.zeros(
+            (projected_pole_mask.shape[0], projected_pole_mask.shape[1], 4),
+            dtype=np.float32
+        )
+        pole_overlay[..., 0] = 1.0
+        pole_overlay[..., 1] = 0.0
+        pole_overlay[..., 2] = 0.0
+        pole_overlay[..., 3] = projected_pole_mask.astype(np.float32) * pole_mask_alpha
+        ax.imshow(pole_overlay)
+        draw_pole_label(ax, projected_pole_mask)
+
+    # Third: yellow boxes + blue labels
+    if detections_df is not None and len(detections_df) > 0:
+        for _, det_row in detections_df.iterrows():
+            x1, y1, x2, y2 = [
+                float(det_row["x1"]),
+                float(det_row["y1"]),
+                float(det_row["x2"]),
+                float(det_row["y2"]),
+            ]
+            score_i = float(det_row["score"])
+
+            rect = patches.Rectangle(
+                (x1, y1),
+                max(0.0, x2 - x1),
+                max(0.0, y2 - y1),
+                linewidth=2.0,
+                edgecolor="yellow",
+                facecolor="none",
+            )
+            ax.add_patch(rect)
+
+            if final_style and "xarm_label" in detections_df.columns and pd.notna(det_row.get("xarm_label", np.nan)):
+                label_text = f"{det_row['xarm_label']}: {score_i:.2f}"
+            else:
+                label_text = f"idx {int(det_row['orig_det_idx'])}: {score_i:.2f}"
+
+            ax.text(
+                x1,
+                max(5, y1 - 5),
+                label_text,
+                color="white",
+                fontsize=7,
+                bbox=dict(facecolor=label_bg, alpha=0.95, pad=0.4, edgecolor="none"),
+            )
+
+    ax.set_title(f"{title}\nN = {0 if detections_df is None else len(detections_df)}", fontsize=10)
+    ax.axis("off")
+
+# -----------------------------------------------------------------------------
+# 12. PROJECT POLE MASK INTO ROI SPACE (IF AVAILABLE)
 # -----------------------------------------------------------------------------
 projected_pole_mask = np.zeros((roi_h, roi_w), dtype=bool)
 projected_pole_mask_available = False
@@ -920,7 +2403,7 @@ if (
 print(f"\nProjected pole mask available   : {projected_pole_mask_available}")
 
 # -----------------------------------------------------------------------------
-# 12. RUN SAM3 INFERENCE — STATEFUL PROCESSOR PATH
+# 13. RUN SAM3 INFERENCE — STATEFUL PROCESSOR PATH
 # -----------------------------------------------------------------------------
 if hasattr(processor, "device"):
     processor.device = RUN_DEVICE
@@ -951,7 +2434,7 @@ raw_scores = state.get("scores", None)
 raw_masks = state.get("masks", None)
 
 # -----------------------------------------------------------------------------
-# 13. NORMALISE OUTPUTS + BUILD CROSSARM MASK LOOKUP
+# 14. NORMALISE OUTPUTS + BUILD CROSSARM MASK LOOKUP
 # -----------------------------------------------------------------------------
 num_detections = infer_num_detections(raw_boxes, raw_scores, raw_masks)
 boxes = normalize_boxes(raw_boxes, num_detections)
@@ -978,7 +2461,7 @@ if not HAS_ANY_VALID_MASKS and num_detections > 0:
     )
 
 # -----------------------------------------------------------------------------
-# 14. BUILD RAW DETECTIONS TABLE + CONTAINMENT SUPPRESSION
+# 15. BUILD RAW DETECTIONS TABLE + CONTAINMENT SUPPRESSION
 # -----------------------------------------------------------------------------
 if num_detections == 0:
     print("  No detections were returned for this prompt.")
@@ -1021,8 +2504,12 @@ else:
         print("\nRemoved by containment suppression:")
         _safe_display(removed_by_containment_df)
 
+# Save stage snapshot
+stage_raw_df = raw_detections_df.copy()
+stage_containment_df = kept_after_containment_df.copy()
+
 # -----------------------------------------------------------------------------
-# 15. MAIN-CLUSTER FILTERING
+# 16. MAIN-CLUSTER FILTERING
 # -----------------------------------------------------------------------------
 if len(kept_after_containment_df) == 0:
     kept_after_cluster_df = kept_after_containment_df.copy()
@@ -1044,8 +2531,11 @@ if len(removed_by_cluster_df) > 0:
     print("\nRemoved by main-cluster filter:")
     _safe_display(removed_by_cluster_df)
 
+# Save stage snapshot
+stage_cluster_df = kept_after_cluster_df.copy()
+
 # -----------------------------------------------------------------------------
-# 16. POLE MASK OVERLAP FILTER
+# 17. POLE MASK OVERLAP FILTER
 # -----------------------------------------------------------------------------
 if len(kept_after_cluster_df) == 0:
     final_kept_detections_df = kept_after_cluster_df.copy()
@@ -1093,8 +2583,11 @@ if len(removed_by_pole_mask_df) > 0:
     print("\nRemoved by pole overlap filter:")
     _safe_display(removed_by_pole_mask_df)
 
+# Save stage snapshot
+stage_pole_overlap_df = final_kept_detections_df.copy()
+
 # -----------------------------------------------------------------------------
-# 17. CROSSARM STRUCTURE FILTER
+# 18. CROSSARM STRUCTURE FILTER
 # -----------------------------------------------------------------------------
 removed_by_structure_df = final_kept_detections_df.iloc[0:0].copy()
 structure_filter_applied = False
@@ -1141,9 +2634,9 @@ if (
         )
 
         structure_keep_mask = (
-            tmp_df["keep_aspect_ratio"] &
-            tmp_df["touches_attach_corridor"] &
-            tmp_df["keep_relative_width"]
+            #tmp_df["keep_aspect_ratio"] &
+            tmp_df["touches_attach_corridor"] 
+            #tmp_df["keep_relative_width"]
         )
 
         removed_by_structure_df = tmp_df[~structure_keep_mask].copy().reset_index(drop=True)
@@ -1210,8 +2703,11 @@ if (
 else:
     print("\nCrossarm structure filter skipped.")
 
+# Save stage snapshot
+stage_structure_df = final_kept_detections_df.copy()
+
 # -----------------------------------------------------------------------------
-# 18. CROSSARM LEVEL DEDUPE FILTER
+# 19. CROSSARM LEVEL DEDUPE FILTER
 # -----------------------------------------------------------------------------
 removed_by_level_df = final_kept_detections_df.iloc[0:0].copy()
 level_filter_applied = False
@@ -1355,8 +2851,11 @@ if CROSSARM_LEVEL_FILTER_ENABLED and len(final_kept_detections_df) > 0:
 else:
     print("\nCrossarm level dedupe filter skipped.")
 
+# Save stage snapshot
+stage_level_df = final_kept_detections_df.copy()
+
 # -----------------------------------------------------------------------------
-# 19. OPTIONAL PCA FILTER ON SUSPICIOUS REMAINING BOXES
+# 20. OPTIONAL PCA FILTER ON SUSPICIOUS REMAINING BOXES
 # -----------------------------------------------------------------------------
 removed_by_pca_df = final_kept_detections_df.iloc[0:0].copy()
 pca_filter_applied = False
@@ -1519,8 +3018,11 @@ if CROSSARM_PCA_FILTER_ENABLED and len(final_kept_detections_df) > 0:
 else:
     print("\nOptional PCA filter skipped.")
 
+# Save stage snapshot
+stage_pca_df = final_kept_detections_df.copy()
+
 # -----------------------------------------------------------------------------
-# 20. ASSIGN Xarm LABELS
+# 21. ASSIGN Xarm LABELS
 # -----------------------------------------------------------------------------
 if len(final_kept_detections_df) > 0:
     final_kept_detections_df = final_kept_detections_df.copy()
@@ -1566,8 +3068,47 @@ if len(final_kept_detections_df) > 0:
         ]
     )
 
+# Save final stage snapshot
+stage_final_df = final_kept_detections_df.copy()
+
 # -----------------------------------------------------------------------------
-# 21. VISUALIZE FINAL KEPT DETECTIONS
+# 22. FINAL GRID OF STAGES
+# -----------------------------------------------------------------------------
+if SHOW_STAGE_GRID:
+    stage_dfs = [
+        ("1. Raw", stage_raw_df),
+        ("2. Containment", stage_containment_df),
+        ("3. Main cluster", stage_cluster_df),
+        ("4. Pole overlap", stage_pole_overlap_df),
+        ("5. Structure", stage_structure_df),
+        ("6. Level dedupe", stage_level_df),
+        ("7. PCA", stage_pca_df),
+        ("8. Final", stage_final_df),
+    ]
+
+    fig, axes = plt.subplots(2, 4, figsize=GRID_FIGSIZE)
+    axes = axes.flatten()
+
+    for ax, (stage_name, stage_df) in zip(axes, stage_dfs):
+        plot_stage_on_ax(
+            ax=ax,
+            image=image,
+            detections_df=stage_df,
+            title=stage_name,
+            projected_pole_mask=projected_pole_mask if projected_pole_mask_available else None,
+            crossarm_mask_lookup=crossarm_mask_lookup,
+            crossarm_mask_alpha=CROSSARM_MASK_ALPHA,
+            pole_mask_alpha=POLE_MASK_ALPHA,
+            label_bg=LABEL_BG,
+            final_style=(stage_name == "8. Final"),
+        )
+
+    plt.tight_layout()
+    plt.show()
+    plt.close()
+
+# -----------------------------------------------------------------------------
+# 23. VISUALIZE FINAL KEPT DETECTIONS
 # -----------------------------------------------------------------------------
 plt.figure(figsize=(12, 9))
 ax = plt.gca()
@@ -1598,7 +3139,6 @@ if num_final_kept > 0:
             overlay[..., 3] = mask_i.astype(np.float32) * CROSSARM_MASK_ALPHA
             ax.imshow(overlay)
 
-# Second: red pole mask overlay
 # Second: red pole mask overlay + POLE label
 if projected_pole_mask_available:
     pole_overlay = np.zeros(
@@ -1611,30 +3151,14 @@ if projected_pole_mask_available:
     pole_overlay[..., 3] = projected_pole_mask.astype(np.float32) * POLE_MASK_ALPHA
     ax.imshow(pole_overlay)
 
-    # Add POLE label using the projected pole mask bounds
-    pole_ys, pole_xs = np.where(projected_pole_mask)
+    draw_pole_label(ax, projected_pole_mask)
 
-    if len(pole_xs) > 0 and len(pole_ys) > 0:
-        pole_label_x = float(pole_xs.min())
-        pole_label_y = float(max(8, pole_ys.min() - 6))
-
-        ax.text(
-            pole_label_x,
-            pole_label_y,
-            "POLE",
-            color="white",
-            fontsize=8,
-            bbox=dict(facecolor="red", alpha=0.90, pad=0.5, edgecolor="none"),
-        )
-
-# Third: yellow boxes + blue labels
+# Third: yellow boxes + blue labels (no pole ov)
 if num_final_kept > 0:
     for _, det_row in final_kept_detections_df.iterrows():
         x1, y1, x2, y2 = [float(det_row["x1"]), float(det_row["y1"]), float(det_row["x2"]), float(det_row["y2"])]
         score_i = float(det_row["score"])
         xarm_label = det_row["xarm_label"]
-
-        pole_overlap_frac = det_row.get("pole_overlap_fraction", np.nan)
 
         rect = patches.Rectangle(
             (x1, y1),
@@ -1646,21 +3170,15 @@ if num_final_kept > 0:
         )
         ax.add_patch(rect)
 
-        if pd.notna(pole_overlap_frac):
-            label_text = (
-                f"{xarm_label}: {score_i:.3f}\n"
-                f"pole ov: {pole_overlap_frac:.3f}"
-            )
-        else:
-            label_text = f"{xarm_label}: {score_i:.3f}"
+        label_text = f"{xarm_label}: {score_i:.2f}"
 
         ax.text(
             x1,
             max(5, y1 - 5),
             label_text,
             color="white",
-            fontsize=9,
-            bbox=dict(facecolor=LABEL_BG, alpha=0.95, pad=1.5, edgecolor="none"),
+            fontsize=7,
+            bbox=dict(facecolor=LABEL_BG, alpha=0.95, pad=0.4, edgecolor="none"),
         )
 
 ax.set_title(
@@ -1676,7 +3194,7 @@ plt.show()
 plt.close()
 
 # -----------------------------------------------------------------------------
-# 22. BUILD ONE-ROW DEBUG RESULTS TABLE
+# 24. BUILD ONE-ROW DEBUG RESULTS TABLE
 # -----------------------------------------------------------------------------
 crossarm_roi_debug_results_df = pd.DataFrame([{
     "crossarm_roi_debug_row_index": CROSSARM_ROI_DEBUG_ROW_INDEX,
@@ -1721,6 +3239,9 @@ crossarm_roi_debug_results_df = pd.DataFrame([{
     "kept_after_cluster": int(len(kept_after_cluster_df)),
     "removed_by_cluster": int(len(removed_by_cluster_df)),
     "removed_by_pole_mask": int(len(removed_by_pole_mask_df)),
+    "removed_by_structure": int(len(removed_by_structure_df)),
+    "removed_by_level": int(len(removed_by_level_df)),
+    "removed_by_pca": int(len(removed_by_pca_df)),
     "final_kept": int(len(final_kept_detections_df)),
     "cluster_threshold_used": float(cluster_threshold_used),
     "level_median_box_h": float(level_median_box_h),
@@ -1733,12 +3254,12 @@ crossarm_roi_debug_results_df = pd.DataFrame([{
 }])
 
 # -----------------------------------------------------------------------------
-# 23. CLEANUP
+# 25. CLEANUP
 # -----------------------------------------------------------------------------
 del image
 
 # -----------------------------------------------------------------------------
-# 24. FINAL CONFIRMATION
+# 26. FINAL CONFIRMATION
 # -----------------------------------------------------------------------------
 print("\nCELL 16A completed successfully.")
 print("Helper functions exposed as globals for CELL 16B:")
@@ -1751,6 +3272,15 @@ print("  - project_pole_mask_to_roi")
 print("  - compute_box_overlap_with_mask")
 print("  - crop_mask_to_box")
 print("  - compute_binary_mask_pca_stats")
+print("  - plot_stage_on_ax")
 print("Saved outputs:")
 print("  - crossarm_roi_debug_results_df")
 print("  - crossarm_mask_lookup")
+print("  - stage_raw_df")
+print("  - stage_containment_df")
+print("  - stage_cluster_df")
+print("  - stage_pole_overlap_df")
+print("  - stage_structure_df")
+print("  - stage_level_df")
+print("  - stage_pca_df")
+print("  - stage_final_df")
