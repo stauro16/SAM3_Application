@@ -72,10 +72,6 @@ if selected_poles_df.empty:
 # -----------------------------------------------------------------------------
 # 2. REQUIRED SELECTED-ROW CONTRACT
 # -----------------------------------------------------------------------------
-# EXPLANATION:
-# These are the minimum fields the production ROI cell expects from CELL 13.
-# Fail early if the selected rows do not meet that contract.
-# -----------------------------------------------------------------------------
 required_selected_cols = [
     "image_path",
     "x1",
@@ -97,9 +93,6 @@ if missing_selected_cols:
 # -----------------------------------------------------------------------------
 # 3. FIXED POLE-TOP ROI CONFIG
 # -----------------------------------------------------------------------------
-# EXPLANATION:
-# Use the current production constants from CELL 3B by default.
-# -----------------------------------------------------------------------------
 FIXED_ROI_WIDTH = int(globals().get("FIXED_ROI_WIDTH", 2600))
 FIXED_ROI_HEIGHT = int(globals().get("FIXED_ROI_HEIGHT", 2600))
 POLE_TOP_BUFFER_ABOVE = int(globals().get("POLE_TOP_BUFFER_ABOVE", 350))
@@ -107,9 +100,6 @@ PAD_RGB = tuple(globals().get("PAD_RGB", (0, 0, 0)))
 
 # -----------------------------------------------------------------------------
 # 3A. OVERWRITE CONTROL
-# -----------------------------------------------------------------------------
-# EXPLANATION:
-# Match the protective pattern you already use in CELL 11 for Bronze rebuilds.
 # -----------------------------------------------------------------------------
 OVERWRITE_POLE_ROIS = bool(globals().get("OVERWRITE_POLE_ROIS", True))
 
@@ -146,36 +136,39 @@ def _candidate_key(image_id, prompt, det_idx):
     return (str(image_id), str(prompt), int(det_idx))
 
 # -----------------------------------------------------------------------------
-# 5. HELPER: SAFE FILE STEM
+# 5. HELPER: EXTRACT TRAILING IMAGE-ID SUFFIX
 # -----------------------------------------------------------------------------
-def make_safe_stem(text):
+def extract_image_suffix_id(image_id):
     """
-    Convert a string into a filesystem-safe stem.
+    Extract the trailing numeric suffix from image_id.
+
+    Examples:
+        img_1298075_003_2060_V_0 -> "0"
+        img_test_12             -> "12"
 
     Args:
-        text:
-            Input string.
+        image_id:
+            Stable image identifier from Cell 12.
 
     Returns:
         str:
-            Filesystem-safe stem.
+            Trailing numeric suffix as a string.
     """
-    if text is None or (isinstance(text, float) and pd.isna(text)):
-        text = "image"
+    if image_id is None:
+        return "0"
 
-    text = str(text).strip()
-    if len(text) == 0:
-        text = "image"
+    image_id_str = str(image_id).strip()
+    parts = image_id_str.rsplit("_", 1)
 
-    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[1]
 
-    return text if len(text) > 0 else "image"
+    return "0"
 
 # -----------------------------------------------------------------------------
 # 6. HELPER: BUILD OUTPUT PATH UNDER SILVER_POLE_ROIS
 # -----------------------------------------------------------------------------
-def build_roi_output_path(row, image_id):
+def build_roi_output_path(row, suffix_id):
     """
     Build the saved ROI output path.
 
@@ -185,15 +178,15 @@ def build_roi_output_path(row, image_id):
 
     Filename strategy:
     - keep the original image stem for readability
-    - append only the trailing numeric identifier from image_id
+    - append only the explicit numeric suffix id
     - avoid repeating the full stem twice
 
     Args:
         row:
             Selected pole row.
 
-        image_id:
-            Stable image identifier, e.g. img_1298075_003_2060_V_0
+        suffix_id:
+            Unique trailing numeric id, e.g. "0", "1", "2".
 
     Returns:
         tuple:
@@ -215,19 +208,6 @@ def build_roi_output_path(row, image_id):
 
     relative_dir = os.path.dirname(relative_image_path)
     base_stem = os.path.splitext(os.path.basename(relative_image_path))[0]
-
-    # -------------------------------------------------------------------------
-    # Extract only the trailing numeric id from image_id.
-    # Example:
-    #   img_1298075_003_2060_V_0 -> 0
-    # -------------------------------------------------------------------------
-    suffix_id = "0"
-
-    if image_id is not None:
-        image_id_str = str(image_id).strip()
-        match = re.search(r"_(\d+)$", image_id_str)
-        if match:
-            suffix_id = match.group(1)
 
     if relative_dir in ("", "."):
         target_dir = SILVER_POLE_ROIS
@@ -271,7 +251,6 @@ def shift_box_inside_image(x1, y1, box_w, box_h, image_w, image_h):
     x2 = x1 + box_w
     y2 = y1 + box_h
 
-    # Shift horizontally if the full box can fit inside the image.
     if image_w >= box_w:
         if x1 < 0:
             x2 += (-x1)
@@ -280,7 +259,6 @@ def shift_box_inside_image(x1, y1, box_w, box_h, image_w, image_h):
             x1 -= (x2 - image_w)
             x2 = image_w
 
-    # Shift vertically if the full box can fit inside the image.
     if image_h >= box_h:
         if y1 < 0:
             y2 += (-y1)
@@ -332,7 +310,6 @@ def build_pole_top_roi_request(row, image_w, image_h):
     else:
         pole_cx = (x1 + x2) / 2.0
 
-    # Anchor from the pole top.
     req_x1 = pole_cx - (FIXED_ROI_WIDTH / 2.0)
     req_y1 = y1 - POLE_TOP_BUFFER_ABOVE
 
@@ -387,7 +364,6 @@ def render_fixed_canvas_roi(image_pil, roi_request):
     req_x2 = int(roi_request["req_x2"])
     req_y2 = int(roi_request["req_y2"])
 
-    # Overlapping source region.
     src_x1 = max(0, req_x1)
     src_y1 = max(0, req_y1)
     src_x2 = min(image_w, req_x2)
@@ -396,7 +372,6 @@ def render_fixed_canvas_roi(image_pil, roi_request):
     overlap_w = max(0, src_x2 - src_x1)
     overlap_h = max(0, src_y2 - src_y1)
 
-    # Paste location on the fixed-size canvas.
     dst_x1 = max(0, src_x1 - req_x1)
     dst_y1 = max(0, src_y1 - req_y1)
 
@@ -433,9 +408,6 @@ def render_fixed_canvas_roi(image_pil, roi_request):
 
 # -----------------------------------------------------------------------------
 # 10. PREPARE / RESET THE SILVER ROI FOLDER
-# -----------------------------------------------------------------------------
-# EXPLANATION:
-# Match the guarded rebuild pattern used elsewhere in the notebook.
 # -----------------------------------------------------------------------------
 if os.path.isdir(SILVER_POLE_ROIS):
     existing_roi_items = os.listdir(SILVER_POLE_ROIS)
@@ -479,10 +451,6 @@ for _, row in selected_poles_df.iterrows():
     ):
         file_name = os.path.basename(image_path)
 
-    # -------------------------------------------------------------------------
-    # Carry forward selected-pole identity fields from CELL 13.
-    # Since we already filtered to selected rows, det_idx should be present.
-    # -------------------------------------------------------------------------
     prompt = row["prompt"] if "prompt" in row.index and pd.notna(row["prompt"]) else None
 
     if "det_idx" in row.index and pd.notna(row["det_idx"]):
@@ -507,8 +475,10 @@ for _, row in selected_poles_df.iterrows():
         mask_lookup_hit = _candidate_key(image_id, prompt, det_idx) in pole_mask_lookup
 
     # -------------------------------------------------------------------------
-    # Open the ORIGINAL source image from pole_selection_df["image_path"].
+    # Compute the explicit suffix id once and carry it forward.
     # -------------------------------------------------------------------------
+    suffix_id = extract_image_suffix_id(image_id)
+
     with Image.open(image_path) as img:
         img = img.convert("RGB")
         image_w, image_h = img.size
@@ -519,7 +489,7 @@ for _, row in selected_poles_df.iterrows():
             image_h=image_h,
         )
 
-        roi_file_name, roi_image_path = build_roi_output_path(row, image_id)
+        roi_file_name, roi_image_path = build_roi_output_path(row, suffix_id)
 
         roi_render = render_fixed_canvas_roi(
             image_pil=img,
@@ -532,6 +502,7 @@ for _, row in selected_poles_df.iterrows():
 
     roi_rows.append({
         "image_id": image_id,
+        "roi_suffix_id": suffix_id,
         "file_name": file_name,
         "relative_image_path": row["relative_image_path"] if "relative_image_path" in row.index else None,
         "image_path": image_path,
