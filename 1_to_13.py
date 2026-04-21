@@ -214,10 +214,270 @@ print("Current CUDA device :", torch.cuda.current_device())
 print("CUDA device name    :", torch.cuda.get_device_name(0))
 
 
+# =============================================================================
+# CELL 3B — GLOBAL CONSTANTS + NOTEBOOK CONFIG - NEW
+# =============================================================================
+# EXPLANATION:
+# This cell defines notebook-wide constants used across the Databricks SAM3
+# workflow up to the current production state (through CELL 14).
+#
+# WHAT THIS CELL DOES:
+#   1) defines runtime constants
+#   2) defines shared global SAM3 thresholds
+#   3) defines shared file / naming / overwrite controls
+#   4) defines CELL 13 pole-detection + selected-pole overlay settings
+#   5) defines CELL 14 fixed-canvas pole-top ROI settings
+#   6) creates a shared SAM3_TASK_CONFIG dictionary
+#
+# IMPORTANT:
+# - run this after CELL 3A
+# - later cells should read these values from globals()
+# - path definitions remain in their existing path-specific cells
+# - this version is intentionally aligned to the notebook state through CELL 14
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. RUNTIME
+# -----------------------------------------------------------------------------
+DEVICE = "cuda"
+
+# -----------------------------------------------------------------------------
+# 2. SHARED GLOBAL SAM3 THRESHOLDS
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Keep one shared threshold definition so later cells do not hardcode values.
+# TEXT threshold filters prompt matches.
+# MASK threshold filters pixel masks during post-processing.
+# -----------------------------------------------------------------------------
+GLOBAL_TEXT_SCORE_THRESHOLD = 0.30
+MASK_THRESHOLD = 0.50
+
+# -----------------------------------------------------------------------------
+# 3. SHARED FILE / NAMING CONSTANTS
+# -----------------------------------------------------------------------------
+VALID_IMAGE_EXTENSIONS = (
+    ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"
+)
+
+IMAGE_ID_PREFIX = "img"
+
+# -----------------------------------------------------------------------------
+# 4. SHARED RUN CONTROLS
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Keep destructive rebuild controls in one visible place.
+# -----------------------------------------------------------------------------
+OVERWRITE_BRONZE = True
+OVERWRITE_POLE_ROIS = True
+
+# -----------------------------------------------------------------------------
+# 5. CELL 13 — POLE DETECTION PROMPTS + THRESHOLDS
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These are used by the production selected-pole cell.
+# -----------------------------------------------------------------------------
+POLE_PROMPT_TEXT = ["utility pole"]
+POLE_TEXT_THRESHOLD = GLOBAL_TEXT_SCORE_THRESHOLD
+
+# -----------------------------------------------------------------------------
+# 6. CELL 13 — POLE POST-PROCESSING CONSTANTS
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These are used for:
+# - prefiltering weak / tiny / short / wide / non-vertical candidates
+# - ranking the remaining candidates
+# - shaft penalty handling
+# -----------------------------------------------------------------------------
+POLE_MIN_SCORE = 0.25
+POLE_MIN_AREA_FRAC = 0.005      # 0.5% of image area
+POLE_MIN_HEIGHT_FRAC = 0.15     # 15% of image height
+POLE_MIN_ASPECT = 1.80          # bbox_h / bbox_w
+POLE_MAX_WIDTH_FRAC = 0.08      # max 8% of image width
+POLE_MAX_BOX_W_PX = 400         # absolute width guard
+
+# Shaft-penalty constants
+SHAFT_WIDTH_FRAC_THRESHOLD = 0.12
+SHAFT_PENALTY_FACTOR = 0.40
+
+# Final ranking weights
+W_X_CENTER = 0.45
+W_HEIGHT   = 0.30
+W_AREA     = 0.10
+W_CONF     = 0.10
+W_EDGE     = 0.05
+
+# -----------------------------------------------------------------------------
+# 7. CELL 13 — PRODUCTION SELECTED-POLE OVERLAY STYLING
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These values control the saved QA overlay PNGs from CELL 13 only.
+# Full-resolution coordinates and masks remain the source of truth.
+# -----------------------------------------------------------------------------
+POLE_SELECTED_MASK_RGB = (1.0, 0.0, 0.0)
+POLE_SELECTED_MASK_ALPHA = 0.28
+POLE_SELECTED_BOX_COLOR = "red"
+POLE_SELECTED_BOX_LINEWIDTH = 3.0
+POLE_SELECTED_TEXT_COLOR = "white"
+POLE_SELECTED_LABEL_FONTSIZE = 14
+POLE_SELECTED_LABEL_BG_ALPHA = 0.85
+POLE_SELECTED_LABEL_BBOX_PAD = 4
+POLE_SELECTED_LABEL_Y_OFFSET = 12
+POLE_OVERLAY_MAX_WIDTH = 1600
+NO_RELIABLE_POLE_LABEL_TEXT = "NO RELIABLE POLE FOUND"
+
+# -----------------------------------------------------------------------------
+# 8. CELL 14 — FIXED-CANVAS POLE-TOP ROI SETTINGS
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# These define the fixed-size saved ROI and padding behaviour for the Silver ROI
+# generation stage.
+#
+# NOTE:
+# This version uses a taller ROI so the pole is less likely to be cut off.
+# -----------------------------------------------------------------------------
+FIXED_ROI_WIDTH = 2600
+FIXED_ROI_HEIGHT = 3500
+POLE_TOP_BUFFER_ABOVE = 250
+PAD_RGB = (0, 0, 0)
+
+# -----------------------------------------------------------------------------
+# 9. SHARED TASK CONFIG DICTIONARY
+# -----------------------------------------------------------------------------
+SAM3_TASK_CONFIG = {
+    "runtime": {
+        "device": DEVICE,
+    },
+
+    "thresholds": {
+        "text_score_threshold": GLOBAL_TEXT_SCORE_THRESHOLD,
+        "mask_threshold": MASK_THRESHOLD,
+        "pole_text_threshold": POLE_TEXT_THRESHOLD,
+    },
+
+    "files": {
+        "valid_image_extensions": VALID_IMAGE_EXTENSIONS,
+    },
+
+    "naming": {
+        "image_id_prefix": IMAGE_ID_PREFIX,
+    },
+
+    "run_controls": {
+        "overwrite_bronze": OVERWRITE_BRONZE,
+        "overwrite_pole_rois": OVERWRITE_POLE_ROIS,
+    },
+
+    "pole_detection": {
+        "prompts": POLE_PROMPT_TEXT,
+        "text_score_threshold": POLE_TEXT_THRESHOLD,
+        "mask_threshold": MASK_THRESHOLD,
+    },
+
+    "pole_postprocess": {
+        "min_score": POLE_MIN_SCORE,
+        "min_area_frac": POLE_MIN_AREA_FRAC,
+        "min_height_frac": POLE_MIN_HEIGHT_FRAC,
+        "min_aspect": POLE_MIN_ASPECT,
+        "max_width_frac": POLE_MAX_WIDTH_FRAC,
+        "max_box_w_px": POLE_MAX_BOX_W_PX,
+        "shaft_width_frac_threshold": SHAFT_WIDTH_FRAC_THRESHOLD,
+        "shaft_penalty_factor": SHAFT_PENALTY_FACTOR,
+        "weights": {
+            "x_center": W_X_CENTER,
+            "height": W_HEIGHT,
+            "area": W_AREA,
+            "conf": W_CONF,
+            "edge": W_EDGE,
+        },
+    },
+
+    "pole_overlay_selected": {
+        "mask_rgb": POLE_SELECTED_MASK_RGB,
+        "mask_alpha": POLE_SELECTED_MASK_ALPHA,
+        "box_color": POLE_SELECTED_BOX_COLOR,
+        "box_linewidth": POLE_SELECTED_BOX_LINEWIDTH,
+        "text_color": POLE_SELECTED_TEXT_COLOR,
+        "label_fontsize": POLE_SELECTED_LABEL_FONTSIZE,
+        "label_bg_alpha": POLE_SELECTED_LABEL_BG_ALPHA,
+        "label_bbox_pad": POLE_SELECTED_LABEL_BBOX_PAD,
+        "label_y_offset": POLE_SELECTED_LABEL_Y_OFFSET,
+        "overlay_max_width": POLE_OVERLAY_MAX_WIDTH,
+        "no_reliable_label_text": NO_RELIABLE_POLE_LABEL_TEXT,
+    },
+
+    "pole_roi_fixed_canvas": {
+        "fixed_roi_width": FIXED_ROI_WIDTH,
+        "fixed_roi_height": FIXED_ROI_HEIGHT,
+        "pole_top_buffer_above": POLE_TOP_BUFFER_ABOVE,
+        "pad_rgb": PAD_RGB,
+    },
+}
+
+# -----------------------------------------------------------------------------
+# 10. PRINT SUMMARY
+# -----------------------------------------------------------------------------
+print("Global constants loaded.\n")
+
+print("=" * 90)
+print("RUNTIME / GLOBAL")
+print("=" * 90)
+print(f"DEVICE                              : {DEVICE}")
+print(f"GLOBAL_TEXT_SCORE_THRESHOLD         : {GLOBAL_TEXT_SCORE_THRESHOLD}")
+print(f"MASK_THRESHOLD                      : {MASK_THRESHOLD}")
+
+print("\n" + "=" * 90)
+print("FILES / NAMING / RUN CONTROLS")
+print("=" * 90)
+print(f"VALID_IMAGE_EXTENSIONS              : {VALID_IMAGE_EXTENSIONS}")
+print(f"IMAGE_ID_PREFIX                     : {IMAGE_ID_PREFIX}")
+print(f"OVERWRITE_BRONZE                    : {OVERWRITE_BRONZE}")
+print(f"OVERWRITE_POLE_ROIS                 : {OVERWRITE_POLE_ROIS}")
+
+print("\n" + "=" * 90)
+print("CELL 13 — POLE DETECTION / POST-PROCESS")
+print("=" * 90)
+print(f"POLE_PROMPT_TEXT                    : {POLE_PROMPT_TEXT}")
+print(f"POLE_TEXT_THRESHOLD                 : {POLE_TEXT_THRESHOLD}")
+print(f"POLE_MIN_SCORE                      : {POLE_MIN_SCORE}")
+print(f"POLE_MIN_AREA_FRAC                  : {POLE_MIN_AREA_FRAC}")
+print(f"POLE_MIN_HEIGHT_FRAC                : {POLE_MIN_HEIGHT_FRAC}")
+print(f"POLE_MIN_ASPECT                     : {POLE_MIN_ASPECT}")
+print(f"POLE_MAX_WIDTH_FRAC                 : {POLE_MAX_WIDTH_FRAC}")
+print(f"POLE_MAX_BOX_W_PX                   : {POLE_MAX_BOX_W_PX}")
+print(f"SHAFT_WIDTH_FRAC_THRESHOLD          : {SHAFT_WIDTH_FRAC_THRESHOLD}")
+print(f"SHAFT_PENALTY_FACTOR                : {SHAFT_PENALTY_FACTOR}")
+print(f"W_X_CENTER                          : {W_X_CENTER}")
+print(f"W_HEIGHT                            : {W_HEIGHT}")
+print(f"W_AREA                              : {W_AREA}")
+print(f"W_CONF                              : {W_CONF}")
+print(f"W_EDGE                              : {W_EDGE}")
+
+print("\n" + "=" * 90)
+print("CELL 13 — SELECTED-POLE OVERLAY STYLE")
+print("=" * 90)
+print(f"POLE_SELECTED_MASK_RGB              : {POLE_SELECTED_MASK_RGB}")
+print(f"POLE_SELECTED_MASK_ALPHA            : {POLE_SELECTED_MASK_ALPHA}")
+print(f"POLE_SELECTED_BOX_COLOR             : {POLE_SELECTED_BOX_COLOR}")
+print(f"POLE_SELECTED_BOX_LINEWIDTH         : {POLE_SELECTED_BOX_LINEWIDTH}")
+print(f"POLE_SELECTED_TEXT_COLOR            : {POLE_SELECTED_TEXT_COLOR}")
+print(f"POLE_SELECTED_LABEL_FONTSIZE        : {POLE_SELECTED_LABEL_FONTSIZE}")
+print(f"POLE_SELECTED_LABEL_BG_ALPHA        : {POLE_SELECTED_LABEL_BG_ALPHA}")
+print(f"POLE_SELECTED_LABEL_BBOX_PAD        : {POLE_SELECTED_LABEL_BBOX_PAD}")
+print(f"POLE_SELECTED_LABEL_Y_OFFSET        : {POLE_SELECTED_LABEL_Y_OFFSET}")
+print(f"POLE_OVERLAY_MAX_WIDTH              : {POLE_OVERLAY_MAX_WIDTH}")
+print(f"NO_RELIABLE_POLE_LABEL_TEXT         : {NO_RELIABLE_POLE_LABEL_TEXT}")
+
+print("\n" + "=" * 90)
+print("CELL 14 — FIXED POLE-TOP ROI")
+print("=" * 90)
+print(f"FIXED_ROI_WIDTH                     : {FIXED_ROI_WIDTH}")
+print(f"FIXED_ROI_HEIGHT                    : {FIXED_ROI_HEIGHT}")
+print(f"POLE_TOP_BUFFER_ABOVE               : {POLE_TOP_BUFFER_ABOVE}")
+print(f"PAD_RGB                             : {PAD_RGB}")
 
 
 # =============================================================================
-# CELL 3B — GLOBAL CONSTANTS + NOTEBOOK CONFIG
+# CELL 3B — GLOBAL CONSTANTS + NOTEBOOK CONFIG - OLD
 # =============================================================================
 # EXPLANATION:
 # This cell defines notebook-wide constants used across the Databricks SAM3
