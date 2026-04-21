@@ -72,8 +72,14 @@ if selected_poles_df.empty:
 # -----------------------------------------------------------------------------
 # 2. REQUIRED SELECTED-ROW CONTRACT
 # -----------------------------------------------------------------------------
+# EXPLANATION:
+# This version intentionally matches the old 15B crop math, which uses the
+# image_w / image_h values already stored in the selected-row DataFrame.
+# -----------------------------------------------------------------------------
 required_selected_cols = [
     "image_path",
+    "image_w",
+    "image_h",
     "x1",
     "y1",
     "x2",
@@ -93,9 +99,12 @@ if missing_selected_cols:
 # -----------------------------------------------------------------------------
 # 3. FIXED POLE-TOP ROI CONFIG
 # -----------------------------------------------------------------------------
-FIXED_ROI_WIDTH = int(globals().get("FIXED_ROI_WIDTH", 3500))
-FIXED_ROI_HEIGHT = int(globals().get("FIXED_ROI_HEIGHT", 4250))
-POLE_TOP_BUFFER_ABOVE = int(globals().get("POLE_TOP_BUFFER_ABOVE", 500))
+# EXPLANATION:
+# These defaults intentionally match the old working 15B behaviour.
+# -----------------------------------------------------------------------------
+FIXED_ROI_WIDTH = int(globals().get("FIXED_ROI_WIDTH", 2600))
+FIXED_ROI_HEIGHT = int(globals().get("FIXED_ROI_HEIGHT", 3500))
+POLE_TOP_BUFFER_ABOVE = int(globals().get("POLE_TOP_BUFFER_ABOVE", 350))
 PAD_RGB = tuple(globals().get("PAD_RGB", (0, 0, 0)))
 
 # -----------------------------------------------------------------------------
@@ -267,6 +276,7 @@ def shift_box_inside_image(x1, y1, box_w, box_h, image_w, image_h):
             y1 -= (y2 - image_h)
             y2 = image_h
 
+    # Recompute the far corner from the final fixed-size origin.
     x2 = x1 + box_w
     y2 = y1 + box_h
 
@@ -282,16 +292,17 @@ def shift_box_inside_image(x1, y1, box_w, box_h, image_w, image_h):
 # -----------------------------------------------------------------------------
 # 8. HELPER: BUILD THE FIXED POLE-TOP ROI REQUEST
 # -----------------------------------------------------------------------------
-def build_pole_top_roi_request(row, image_w, image_h):
+def build_pole_top_roi_request(row):
     """
     Build a fixed-size pole-top ROI request from the selected pole row.
+
+    IMPORTANT:
+    This intentionally matches the old 15B behaviour by reading image_w / image_h
+    from the selected DataFrame row.
 
     Args:
         row:
             Selected pole row from pole_selection_df.
-
-        image_w, image_h:
-            True source image dimensions.
 
     Returns:
         Dict[str, Any]:
@@ -301,6 +312,9 @@ def build_pole_top_roi_request(row, image_w, image_h):
     y1 = float(row["y1"])
     x2 = float(row["x2"])
     y2 = float(row["y2"])
+
+    image_w = int(row["image_w"])
+    image_h = int(row["image_h"])
 
     pole_w = max(x2 - x1, 1.0)
     pole_h = max(y2 - y1, 1.0)
@@ -474,22 +488,16 @@ for _, row in selected_poles_df.iterrows():
     ):
         mask_lookup_hit = _candidate_key(image_id, prompt, det_idx) in pole_mask_lookup
 
-    # -------------------------------------------------------------------------
-    # Compute the explicit suffix id once and carry it forward.
-    # -------------------------------------------------------------------------
     suffix_id = extract_image_suffix_id(image_id)
+
+    # IMPORTANT:
+    # This now matches the old 15B behaviour — build the request from row values.
+    roi_request = build_pole_top_roi_request(row)
+
+    roi_file_name, roi_image_path = build_roi_output_path(row, suffix_id)
 
     with Image.open(image_path) as img:
         img = img.convert("RGB")
-        image_w, image_h = img.size
-
-        roi_request = build_pole_top_roi_request(
-            row=row,
-            image_w=image_w,
-            image_h=image_h,
-        )
-
-        roi_file_name, roi_image_path = build_roi_output_path(row, suffix_id)
 
         roi_render = render_fixed_canvas_roi(
             image_pil=img,
@@ -522,8 +530,8 @@ for _, row in selected_poles_df.iterrows():
         # ---------------------------------------------------------------------
         # Full source image geometry
         # ---------------------------------------------------------------------
-        "image_w": int(image_w),
-        "image_h": int(image_h),
+        "image_w": int(row["image_w"]),
+        "image_h": int(row["image_h"]),
 
         # ---------------------------------------------------------------------
         # Selected pole geometry
