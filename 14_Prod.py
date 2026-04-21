@@ -93,9 +93,9 @@ if missing_selected_cols:
 # -----------------------------------------------------------------------------
 # 3. FIXED POLE-TOP ROI CONFIG
 # -----------------------------------------------------------------------------
-FIXED_ROI_WIDTH = int(globals().get("FIXED_ROI_WIDTH", 2600))
-FIXED_ROI_HEIGHT = int(globals().get("FIXED_ROI_HEIGHT", 2600))
-POLE_TOP_BUFFER_ABOVE = int(globals().get("POLE_TOP_BUFFER_ABOVE", 350))
+FIXED_ROI_WIDTH = int(globals().get("FIXED_ROI_WIDTH", 3500))
+FIXED_ROI_HEIGHT = int(globals().get("FIXED_ROI_HEIGHT", 4250))
+POLE_TOP_BUFFER_ABOVE = int(globals().get("POLE_TOP_BUFFER_ABOVE", 500))
 PAD_RGB = tuple(globals().get("PAD_RGB", (0, 0, 0)))
 
 # -----------------------------------------------------------------------------
