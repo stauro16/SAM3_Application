@@ -335,9 +335,9 @@ NO_RELIABLE_POLE_LABEL_TEXT = "NO RELIABLE POLE FOUND"
 # NOTE:
 # This version uses a taller ROI so the pole is less likely to be cut off.
 # -----------------------------------------------------------------------------
-FIXED_ROI_WIDTH = 2600
-FIXED_ROI_HEIGHT = 3500
-POLE_TOP_BUFFER_ABOVE = 250
+FIXED_ROI_WIDTH = 3500
+FIXED_ROI_HEIGHT = 4250
+POLE_TOP_BUFFER_ABOVE = 500
 PAD_RGB = (0, 0, 0)
 
 # -----------------------------------------------------------------------------
@@ -598,9 +598,9 @@ MIN_BOTTOM_EXTRA_PIXELS = 10
 # These define the fixed-size saved ROI and padding behaviour for the Silver ROI
 # generation stage.
 # -----------------------------------------------------------------------------
-FIXED_ROI_WIDTH = 2600
-FIXED_ROI_HEIGHT = 2600
-POLE_TOP_BUFFER_ABOVE = 350
+FIXED_ROI_WIDTH = 3500
+FIXED_ROI_HEIGHT = 4250
+POLE_TOP_BUFFER_ABOVE = 500
 PAD_RGB = (0, 0, 0)
 POLE_ROI_GALLERY_COUNT = 6
 
