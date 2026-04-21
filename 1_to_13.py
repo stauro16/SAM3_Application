@@ -335,8 +335,8 @@ NO_RELIABLE_POLE_LABEL_TEXT = "NO RELIABLE POLE FOUND"
 # NOTE:
 # This version uses a taller ROI so the pole is less likely to be cut off.
 # -----------------------------------------------------------------------------
-FIXED_ROI_WIDTH = 3500
-FIXED_ROI_HEIGHT = 4250
+FIXED_ROI_WIDTH = 2600
+FIXED_ROI_HEIGHT = 3500
 POLE_TOP_BUFFER_ABOVE = 500
 PAD_RGB = (0, 0, 0)
 
