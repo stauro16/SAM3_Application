@@ -1148,6 +1148,202 @@ stage_cluster_df = kept_after_cluster_df.copy()
 # stage_pole_overlap_df = final_kept_detections_df.copy()
 
 # -----------------------------------------------------------------------------
+# 17. POLE MASK OVERLAP FILTER + TOP-OF-POLE RESCUE
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# Standard overlap-only filtering can wrongly remove genuine crossarms when the
+# crossarm sits right at the top of the pole and only a small portion of the
+# crossarm box overlaps the visible pole mask.
+#
+# NEW HYBRID RULE:
+# Keep a detection if either:
+#   1) it has enough normal pole overlap, OR
+#   2) it looks like a top-of-pole attachment:
+#        - touches the pole attachment corridor in X
+#        - touches a top-of-pole band in Y
+#        - is wide enough relative to the other candidates
+#
+# This keeps real top crossarms without broadly weakening the overlap filter.
+# -----------------------------------------------------------------------------
+removed_by_pole_mask_df = kept_after_cluster_df.iloc[0:0].copy()
+
+# Local rescue-band settings for this debug cell.
+TOP_BAND_ABOVE = 80
+TOP_BAND_BELOW = 250
+
+if len(kept_after_cluster_df) == 0:
+    final_kept_detections_df = kept_after_cluster_df.copy()
+    removed_by_pole_mask_df = kept_after_cluster_df.copy()
+
+elif (
+    POLE_MASK_FILTER_ENABLED
+    and projected_pole_mask_available
+):
+    pole_mask_filter_applied = True
+
+    tmp_df = kept_after_cluster_df.copy().reset_index(drop=True)
+
+    # -------------------------------------------------------------------------
+    # 1. Standard pole-overlap fraction
+    # -------------------------------------------------------------------------
+    overlap_fracs = []
+    for _, det_row in tmp_df.iterrows():
+        box_i = [det_row["x1"], det_row["y1"], det_row["x2"], det_row["y2"]]
+        frac = compute_box_overlap_with_mask(box_i, projected_pole_mask)
+        overlap_fracs.append(float(frac))
+
+    tmp_df["pole_overlap_fraction"] = overlap_fracs
+    tmp_df["kept_by_pole_overlap"] = (
+        tmp_df["pole_overlap_fraction"] >= POLE_OVERLAP_MIN_FRACTION
+    )
+
+    # Default debug columns so they always exist
+    tmp_df["touches_attach_corridor"] = False
+    tmp_df["touches_top_band"] = False
+    tmp_df["rescued_by_top_attach"] = False
+    tmp_df["box_w"] = (tmp_df["x2"] - tmp_df["x1"]).clip(lower=0.0)
+
+    max_box_w = float(tmp_df["box_w"].max()) if len(tmp_df) > 0 else 0.0
+    if max_box_w > 0:
+        tmp_df["relative_width_to_max"] = tmp_df["box_w"] / max_box_w
+    else:
+        tmp_df["relative_width_to_max"] = 0.0
+
+    # -------------------------------------------------------------------------
+    # 2. Pole corridor + top-of-pole rescue
+    # -------------------------------------------------------------------------
+    pole_cols = np.where(projected_pole_mask.any(axis=0))[0]
+    pole_rows = np.where(projected_pole_mask.any(axis=1))[0]
+
+    if len(pole_cols) > 0 and len(pole_rows) > 0:
+        pole_x1 = int(pole_cols.min())
+        pole_x2 = int(pole_cols.max())
+        pole_top_y = int(pole_rows.min())
+
+        attach_x1 = max(0, pole_x1 - int(POLE_ATTACH_MARGIN_PX))
+        attach_x2 = min(roi_w - 1, pole_x2 + int(POLE_ATTACH_MARGIN_PX))
+
+        top_band_y1 = max(0, pole_top_y - int(TOP_BAND_ABOVE))
+        top_band_y2 = min(roi_h - 1, pole_top_y + int(TOP_BAND_BELOW))
+
+        tmp_df["touches_attach_corridor"] = (
+            (tmp_df["x2"] >= attach_x1) &
+            (tmp_df["x1"] <= attach_x2)
+        )
+
+        tmp_df["touches_top_band"] = (
+            (tmp_df["y2"] >= top_band_y1) &
+            (tmp_df["y1"] <= top_band_y2)
+        )
+
+        rescue_mask = (
+            tmp_df["touches_attach_corridor"] &
+            tmp_df["touches_top_band"] &
+            (tmp_df["relative_width_to_max"] >= MIN_RELATIVE_WIDTH_TO_MAX)
+        )
+
+        tmp_df["rescued_by_top_attach"] = rescue_mask
+
+        keep_flags_arr = (
+            tmp_df["kept_by_pole_overlap"] |
+            tmp_df["rescued_by_top_attach"]
+        ).to_numpy(dtype=bool)
+
+        print("\nPole-overlap rescue geometry:")
+        print(f"  pole_x_range                   : [{pole_x1}, {pole_x2}]")
+        print(f"  attach_corridor_x_range        : [{attach_x1}, {attach_x2}]")
+        print(f"  pole_top_y                     : {pole_top_y}")
+        print(f"  top_band_y_range               : [{top_band_y1}, {top_band_y2}]")
+        print(f"  TOP_BAND_ABOVE                 : {TOP_BAND_ABOVE}")
+        print(f"  TOP_BAND_BELOW                 : {TOP_BAND_BELOW}")
+
+    else:
+        keep_flags_arr = tmp_df["kept_by_pole_overlap"].to_numpy(dtype=bool)
+
+    final_kept_detections_df = tmp_df[keep_flags_arr].copy().reset_index(drop=True)
+    removed_by_pole_mask_df = tmp_df[~keep_flags_arr].copy().reset_index(drop=True)
+
+    if len(removed_by_pole_mask_df) > 0:
+        removed_by_pole_mask_df["removal_reason"] = (
+            "failed_pole_overlap_or_top_attach_rescue"
+        )
+
+else:
+    final_kept_detections_df = kept_after_cluster_df.copy()
+    removed_by_pole_mask_df = kept_after_cluster_df.iloc[0:0].copy()
+
+    final_kept_detections_df["pole_overlap_fraction"] = np.nan
+    final_kept_detections_df["kept_by_pole_overlap"] = False
+    final_kept_detections_df["touches_attach_corridor"] = False
+    final_kept_detections_df["touches_top_band"] = False
+    final_kept_detections_df["rescued_by_top_attach"] = False
+
+    final_kept_detections_df["box_w"] = (
+        final_kept_detections_df["x2"] - final_kept_detections_df["x1"]
+    ).clip(lower=0.0)
+
+    max_box_w = float(final_kept_detections_df["box_w"].max()) if len(final_kept_detections_df) > 0 else 0.0
+    if max_box_w > 0:
+        final_kept_detections_df["relative_width_to_max"] = (
+            final_kept_detections_df["box_w"] / max_box_w
+        )
+    else:
+        final_kept_detections_df["relative_width_to_max"] = 0.0
+
+print(f"\nPole mask filter applied        : {pole_mask_filter_applied}")
+print(f"POLE_OVERLAP_MIN_FRACTION       : {POLE_OVERLAP_MIN_FRACTION}")
+print(f"Final kept detections           : {len(final_kept_detections_df)}")
+print(f"Removed by pole overlap filter  : {len(removed_by_pole_mask_df)}")
+
+if len(final_kept_detections_df) > 0:
+    print("\nKept after pole overlap + top-attach rescue:")
+    _safe_display(
+        final_kept_detections_df[
+            [
+                c for c in [
+                    "orig_det_idx",
+                    "score",
+                    "pole_overlap_fraction",
+                    "kept_by_pole_overlap",
+                    "touches_attach_corridor",
+                    "touches_top_band",
+                    "rescued_by_top_attach",
+                    "box_w",
+                    "relative_width_to_max",
+                    "x1", "y1", "x2", "y2",
+                ]
+                if c in final_kept_detections_df.columns
+            ]
+        ]
+    )
+
+if len(removed_by_pole_mask_df) > 0:
+    print("\nRemoved by pole overlap filter:")
+    _safe_display(
+        removed_by_pole_mask_df[
+            [
+                c for c in [
+                    "orig_det_idx",
+                    "score",
+                    "pole_overlap_fraction",
+                    "kept_by_pole_overlap",
+                    "touches_attach_corridor",
+                    "touches_top_band",
+                    "rescued_by_top_attach",
+                    "box_w",
+                    "relative_width_to_max",
+                    "x1", "y1", "x2", "y2",
+                    "removal_reason",
+                ]
+                if c in removed_by_pole_mask_df.columns
+            ]
+        ]
+    )
+
+# Save stage snapshot
+stage_pole_overlap_df = final_kept_detections_df.copy()
+
+# -----------------------------------------------------------------------------
 # 18. CROSSARM STRUCTURE FILTER
 # -----------------------------------------------------------------------------
 removed_by_structure_df = final_kept_detections_df.iloc[0:0].copy()
