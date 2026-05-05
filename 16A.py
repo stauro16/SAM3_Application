@@ -511,6 +511,120 @@ def suppress_contained_shorter_detections(
 
     return kept_df, removed_df
 
+def suppress_contained_shorter_detections(
+    detections_df,
+    containment_threshold=0.80,
+    min_area_ratio=1.20,
+    min_score_advantage=0.0,
+):
+    """
+    Suppress only near-duplicate nested detections.
+
+    EXPLANATION:
+    The old logic removed any smaller box that was strongly contained inside a
+    larger box with slightly better score. That is too aggressive for cases
+    where a small real crossarm part sits inside a larger sloppy detection.
+
+    NEW RULE:
+    Remove detection j only if:
+      1) j is strongly contained inside i
+      2) i is meaningfully larger than j
+      3) i has at least slightly better score
+      4) i and j are centred in nearly the same place
+
+    The added center-alignment check makes containment behave more like true
+    duplicate suppression, rather than deleting valid sub-components.
+    """
+    if detections_df.empty:
+        return detections_df.copy(), detections_df.iloc[0:0].copy()
+
+    df = detections_df.copy().reset_index(drop=True)
+    df["box_area"] = df.apply(
+        lambda r: box_area_xyxy([r["x1"], r["y1"], r["x2"], r["y2"]]),
+        axis=1,
+    )
+
+    keep_mask = np.ones(len(df), dtype=bool)
+    removal_reason = [None] * len(df)
+
+    for j in range(len(df)):
+        if not keep_mask[j]:
+            continue
+
+        area_j = float(df.loc[j, "box_area"])
+        score_j = float(df.loc[j, "score"])
+        box_j = [
+            float(df.loc[j, "x1"]),
+            float(df.loc[j, "y1"]),
+            float(df.loc[j, "x2"]),
+            float(df.loc[j, "y2"]),
+        ]
+
+        if area_j <= 0:
+            keep_mask[j] = False
+            removal_reason[j] = "invalid_box_area"
+            continue
+
+        # Center + size for the smaller/current box j
+        cx_j = (box_j[0] + box_j[2]) / 2.0
+        cy_j = (box_j[1] + box_j[3]) / 2.0
+        w_j = max(box_j[2] - box_j[0], 1.0)
+        h_j = max(box_j[3] - box_j[1], 1.0)
+
+        for i in range(len(df)):
+            if i == j:
+                continue
+
+            area_i = float(df.loc[i, "box_area"])
+            score_i = float(df.loc[i, "score"])
+            box_i = [
+                float(df.loc[i, "x1"]),
+                float(df.loc[i, "y1"]),
+                float(df.loc[i, "x2"]),
+                float(df.loc[i, "y2"]),
+            ]
+
+            if area_i <= 0:
+                continue
+
+            inter = intersection_area_xyxy(box_i, box_j)
+            containment_of_j_inside_i = inter / area_j if area_j > 0 else 0.0
+            area_ratio = area_i / area_j if area_j > 0 else 0.0
+            score_advantage = score_i - score_j
+
+            # Center + size for the larger/comparison box i
+            cx_i = (box_i[0] + box_i[2]) / 2.0
+            cy_i = (box_i[1] + box_i[3]) / 2.0
+            w_i = max(box_i[2] - box_i[0], 1.0)
+            h_i = max(box_i[3] - box_i[1], 1.0)
+
+            # NEW: near-duplicate alignment test
+            center_dx_norm = abs(cx_i - cx_j) / max(w_i, w_j)
+            center_dy_norm = abs(cy_i - cy_j) / max(h_i, h_j)
+
+            if (
+                containment_of_j_inside_i >= containment_threshold
+                and area_ratio >= min_area_ratio
+                and score_advantage >= min_score_advantage
+                and center_dx_norm <= 0.25
+                and center_dy_norm <= 0.25
+            ):
+                keep_mask[j] = False
+                removal_reason[j] = (
+                    f"contained_in_orig_{int(df.loc[i, 'orig_det_idx'])}"
+                )
+                break
+
+    kept_df = df[keep_mask].copy().reset_index(drop=True)
+    removed_df = df[~keep_mask].copy().reset_index(drop=True)
+
+    if len(removed_df) > 0:
+        removed_df["removal_reason"] = [
+            removal_reason[idx] for idx in np.where(~keep_mask)[0]
+        ]
+
+    return kept_df, removed_df
+
 # -----------------------------------------------------------------------------
 # 9. HELPER: MAIN-CLUSTER FILTERING
 # -----------------------------------------------------------------------------
