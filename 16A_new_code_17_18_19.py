@@ -2170,6 +2170,106 @@ else:
 # Save stage snapshot
 stage_continuity_df = final_kept_detections_df.copy()
 
+# -----------------------------------------------------------------------------
+# 18B. DEBUG DISPLAY — EACH CROSSARM AFTER CONTINUITY MERGE
+# -----------------------------------------------------------------------------
+# EXPLANATION:
+# This is a visual check for Step 18A.
+#
+# It displays each kept crossarm separately after the continuity merge.
+# If Step 18A worked, a merged crossarm should show:
+#   - one panel
+#   - one yellow union box
+#   - one combined/union mask
+#   - continuity_group_size > 1
+#   - continuity_member_orig_det_idxs containing multiple original detections
+#
+# NOTE:
+# This is debug-only. Do not use this in the final production bulk cell.
+# -----------------------------------------------------------------------------
+
+SHOW_INDIVIDUAL_CROSSARMS_AFTER_18A = True
+
+if SHOW_INDIVIDUAL_CROSSARMS_AFTER_18A:
+    if "stage_continuity_df" not in globals():
+        print("\nStep 18B skipped — stage_continuity_df not found. Run Step 18A first.")
+
+    elif stage_continuity_df is None or len(stage_continuity_df) == 0:
+        print("\nStep 18B skipped — no crossarms kept after Step 18A.")
+
+    else:
+        debug_df = stage_continuity_df.copy().reset_index(drop=True)
+
+        n_items = len(debug_df)
+        n_cols = 2
+        n_rows = int(np.ceil(n_items / n_cols))
+
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(14, 6 * n_rows),
+            squeeze=False,
+        )
+
+        for plot_idx, (_, det_row) in enumerate(debug_df.iterrows()):
+            ax = axes[plot_idx // n_cols][plot_idx % n_cols]
+
+            one_df = pd.DataFrame([det_row]).reset_index(drop=True)
+
+            orig_idx = int(det_row["orig_det_idx"])
+            score_i = float(det_row["score"])
+
+            group_id = det_row.get("continuity_group_id", "NA")
+            group_size = det_row.get("continuity_group_size", 1)
+            member_ids = det_row.get("continuity_member_orig_det_idxs", str(orig_idx))
+            merged_flag = det_row.get("continuity_merged", False)
+
+            title = (
+                f"After Step 18A — Crossarm {plot_idx + 1}\n"
+                f"orig_det_idx={orig_idx} | score={score_i:.2f} | "
+                f"group={group_id} | size={group_size} | merged={merged_flag}\n"
+                f"members={member_ids}"
+            )
+
+            plot_stage_on_ax(
+                ax=ax,
+                image=image,
+                detections_df=one_df,
+                title=title,
+                projected_pole_mask=projected_pole_mask,
+                crossarm_mask_lookup=crossarm_mask_lookup,
+                crossarm_mask_alpha=CROSSARM_MASK_ALPHA,
+                pole_mask_alpha=POLE_MASK_ALPHA,
+                label_bg=LABEL_BG,
+                final_style=False,
+            )
+
+        # Hide unused axes
+        for empty_idx in range(n_items, n_rows * n_cols):
+            axes[empty_idx // n_cols][empty_idx % n_cols].axis("off")
+
+        plt.tight_layout()
+        plt.show()
+
+        print("\nStep 18B continuity check table:")
+        _safe_display(
+            debug_df[
+                [
+                    c for c in [
+                        "orig_det_idx",
+                        "score",
+                        "continuity_group_id",
+                        "continuity_group_size",
+                        "continuity_member_orig_det_idxs",
+                        "continuity_merged",
+                        "continuity_angle_deg",
+                        "continuity_pole_line_dist",
+                        "x1", "y1", "x2", "y2",
+                    ]
+                    if c in debug_df.columns
+                ]
+            ]
+        )
 
 # -----------------------------------------------------------------------------
 # 19. CROSSARM LEVEL DEDUPE FILTER
